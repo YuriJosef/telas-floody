@@ -16,7 +16,7 @@ const Icons = {
 };
 
 // ==========================================
-// TELA DE LOGIN / CADASTRO
+// TELA DE LOGIN / CADASTRO COM PERSISTÊNCIA
 // ==========================================
 function AuthScreen({ onLogin }) {
   const [isLogin, setIsLogin] = useState(true);
@@ -25,20 +25,47 @@ function AuthScreen({ onLogin }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!formData.email || !formData.senha || (!isLogin && !formData.nome)) {
-      setErro('Por favor, preencha todos os campos obrigatórios.'); return;
-    }
+    setErro('');
+
+    // Busca usuários armazenados no navegador ou inicializa com conta Padrão
     const savedUsers = JSON.parse(localStorage.getItem('floody_users')) || [
       { nome: 'Admin Floody', email: 'admin@floody.com', senha: '123', tipo: 'admin' }
     ];
+
     if (isLogin) {
-      const user = savedUsers.find(u => u.email === formData.email && u.senha === formData.senha);
+      const user = savedUsers.find(
+        u => u.email.trim().toLowerCase() === formData.email.trim().toLowerCase() && u.senha === formData.senha
+      );
+
       if (user) {
         localStorage.setItem('floody_active_session', JSON.stringify(user));
         onLogin(user);
-      } else { setErro('E-mail ou senha incorretos.'); }
+      } else {
+        setErro('E-mail ou senha incorretos.');
+      }
     } else {
-      const newUser = { id: Date.now(), nome: formData.nome, email: formData.email, senha: formData.senha, tipo: 'usuario' };
+      if (!formData.nome || !formData.email || !formData.senha) {
+        setErro('Preencha todos os campos para se cadastrar.');
+        return;
+      }
+
+      const userExists = savedUsers.some(
+        u => u.email.trim().toLowerCase() === formData.email.trim().toLowerCase()
+      );
+
+      if (userExists) {
+        setErro('Este e-mail já está cadastrado.');
+        return;
+      }
+
+      const newUser = {
+        id: Date.now(),
+        nome: formData.nome,
+        email: formData.email,
+        senha: formData.senha,
+        tipo: 'usuario'
+      };
+
       savedUsers.push(newUser);
       localStorage.setItem('floody_users', JSON.stringify(savedUsers));
       localStorage.setItem('floody_active_session', JSON.stringify(newUser));
@@ -49,16 +76,57 @@ function AuthScreen({ onLogin }) {
   return (
     <div className="auth-wrapper">
       <div className="auth-card">
-        <div className="auth-logo"><div className="logo-mark">F<span>💧</span></div><h2>Floody</h2></div>
+        <div className="auth-logo">
+          <div className="logo-mark">💧</div>
+          <h2>Floody</h2>
+        </div>
         <p className="auth-subtitle">{isLogin ? 'Faça login para continuar' : 'Cadastre-se na plataforma'}</p>
+        
         {erro && <div className="auth-erro">{erro}</div>}
+        
         <form onSubmit={handleSubmit} className="auth-form">
-          {!isLogin && <div className="input-group"><label>Nome Completo</label><input type="text" value={formData.nome} onChange={e => setFormData({...formData, nome: e.target.value})} /></div>}
-          <div className="input-group"><label>E-mail</label><input type="email" value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} /></div>
-          <div className="input-group"><label>Senha</label><input type="password" value={formData.senha} onChange={e => setFormData({...formData, senha: e.target.value})} /></div>
-          <button type="submit" className="btn-primary auth-btn">{isLogin ? 'Entrar' : 'Cadastrar'}</button>
+          {!isLogin && (
+            <div className="input-group">
+              <label>Nome Completo</label>
+              <input 
+                type="text" 
+                required
+                placeholder="Seu nome"
+                value={formData.nome} 
+                onChange={e => setFormData({...formData, nome: e.target.value})} 
+              />
+            </div>
+          )}
+          <div className="input-group">
+            <label>E-mail</label>
+            <input 
+              type="email" 
+              required
+              placeholder="seuemail@email.com"
+              value={formData.email} 
+              onChange={e => setFormData({...formData, email: e.target.value})} 
+            />
+          </div>
+          <div className="input-group">
+            <label>Senha</label>
+            <input 
+              type="password" 
+              required
+              placeholder="••••••••"
+              value={formData.senha} 
+              onChange={e => setFormData({...formData, senha: e.target.value})} 
+            />
+          </div>
+          <button type="submit" className="btn-primary auth-btn">
+            {isLogin ? 'Entrar' : 'Cadastrar e Entrar'}
+          </button>
         </form>
-        <div className="auth-switch"><button type="button" onClick={() => { setIsLogin(!isLogin); setErro(''); }}>{isLogin ? 'Não tem conta? Criar agora' : 'Já possui conta? Fazer login'}</button></div>
+        
+        <div className="auth-switch">
+          <button type="button" onClick={() => { setIsLogin(!isLogin); setErro(''); }}>
+            {isLogin ? 'Não tem conta? Criar agora' : 'Já possui conta? Fazer login'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -74,9 +142,10 @@ function MainApp({ user, onLogout }) {
   const [reportes, setReportes] = useState([]);
   const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: 'Av. Agamenon Magalhães, Recife' });
   
-  const [liveRain, setLiveRain] = useState(42);
-  const [liveWaterLevel, setLiveWaterLevel] = useState(1.45);
-  const [chartData, setChartData] = useState([30, 45, 60, 50, 75, 90, 85]);
+  // Dados de Chuva Reais vindos da API
+  const [realRain, setRealRain] = useState(0);
+  const [waterLevel, setWaterLevel] = useState(0.4);
+  const [loadingApi, setLoadingApi] = useState(true);
 
   // FIPE States
   const [marcas, setMarcas] = useState([]);
@@ -86,21 +155,40 @@ function MainApp({ user, onLogout }) {
   const [alturaCarro, setAlturaCarro] = useState('');
 
   const recifeCenter = [-8.05428, -34.8813];
+
+  // PONTOS DE MONITORAMENTO EM RECIFE
   const zones = [
-    { id: 'z1', nome: "Av. Agamenon Magalhães", status: "Crítico", nivel: 1.80, coords: [-8.0470, -34.8770], raio: 600, cor: '#ef4444' },
-    { id: 'z2', nome: "Av. Domingos Ferreira", status: "Atenção", nivel: 0.90, coords: [-8.1130, -34.8940], raio: 500, cor: '#f59e0b' }
+    { id: 'z1', nome: "Av. Agamenon Magalhães", coords: [-8.0470, -34.8770], raio: 600 },
+    { id: 'z2', nome: "Av. Domingos Ferreira (Boa Viagem)", coords: [-8.1130, -34.8940], raio: 500 },
+    { id: 'z3', nome: "Av. Recife (Iputinga/Areias)", coords: [-8.0820, -34.9250], raio: 700 }
   ];
 
+  // API REAL DE METEOROLOGIA (RECIFE - Open-Meteo API)
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLiveRain(prev => Math.max(20, Math.min(120, +(prev + (Math.random() * 10 - 5)).toFixed(1))));
-      setLiveWaterLevel(prev => Math.max(0.2, Math.min(2.5, +(prev + (Math.random() * 0.2 - 0.1)).toFixed(2))));
-      setChartData(prev => [...prev.slice(1), Math.floor(Math.random() * 80) + 20]);
-    }, 3000);
+    const fetchRealData = () => {
+      fetch('https://api.open-meteo.com/v1/forecast?latitude=-8.05428&longitude=-34.8813&current=precipitation,rain,showers')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.current) {
+            const currentPrecip = data.current.precipitation || data.current.rain || 0;
+            setRealRain(currentPrecip);
+            // Lâmina d'água estimada com base no acumulado da precipitação real
+            setWaterLevel((0.2 + (currentPrecip * 0.15)).toFixed(2));
+          }
+          setLoadingApi(false);
+        })
+        .catch(err => {
+          console.error("Erro ao carregar dados reais de Recife:", err);
+          setLoadingApi(false);
+        });
+    };
+
+    fetchRealData();
+    const interval = setInterval(fetchRealData, 60000); // Atualiza a cada 1 minuto
     return () => clearInterval(interval);
   }, []);
 
-  // Consumindo API da FIPE
+  // CARREGAR DADOS FIPE E LOCALSTORAGE
   useEffect(() => {
     setVeiculos(JSON.parse(localStorage.getItem('floody_veiculos')) || []);
     setReportes(JSON.parse(localStorage.getItem('floody_reportes')) || []);
@@ -143,13 +231,13 @@ function MainApp({ user, onLogout }) {
       
       {/* HEADER MOBILE */}
       <div className="mobile-header">
-        <div className="mobile-logo"><div className="logo-mark-small">F<span>💧</span></div><h3>Floody</h3></div>
+        <div className="mobile-logo"><div className="logo-mark-small">💧</div><h3>Floody</h3></div>
         <button onClick={onLogout} className="mobile-logout-btn" title="Sair da Conta"><Icons.LogOut /></button>
       </div>
 
       {/* SIDEBAR DESKTOP */}
       <aside className="pro-sidebar">
-        <div className="logo-container"><div className="logo-mark">F<span>💧</span></div><h2>Floody</h2></div>
+        <div className="logo-container"><div className="logo-mark">💧</div><h2>Floody</h2></div>
         <nav className="pro-nav">
           {user.tipo !== 'admin' && (
             <>
@@ -168,7 +256,7 @@ function MainApp({ user, onLogout }) {
         </nav>
         <div className="user-profile">
           <div className="user-info"><strong>{user.nome}</strong><span>{user.tipo === 'admin' ? 'Administrador' : 'Condutor'}</span></div>
-          <button onClick={onLogout} className="logout-btn"><Icons.LogOut /></button>
+          <button onClick={onLogout} className="logout-btn" title="Sair"><Icons.LogOut /></button>
         </div>
       </aside>
 
@@ -178,40 +266,47 @@ function MainApp({ user, onLogout }) {
         {activeTab === 'dashboard' && (
           <div className="fade-in scrollable-tab">
             <header className="content-title-header">
-              <h1>Central de Monitoramento</h1>
-              <p>Dados de sensores IoT espalhados por Recife atualizando ao vivo.</p>
+              <h1>Central de Monitoramento Recife</h1>
+              <p>Dados oficiais de satélite e radares meteorológicos obtidos via API pública em tempo real.</p>
             </header>
             
             <div className="live-stats-grid">
               <div className="stat-card live-pulse-border">
-                <div className="stat-header"><span>Pluviômetro Instantâneo</span><span className="live-tag">AO VIVO</span></div>
-                <h2>{liveRain} <span className="unit">mm/h</span></h2>
-                <div className="stat-footer">Taxa de precipitação na Região Metropolitana</div>
+                <div className="stat-header"><span>Precipitação Real (Open-Meteo API)</span><span className="live-tag">RECIFE AO VIVO</span></div>
+                <h2>{loadingApi ? 'Carregando...' : `${realRain} mm/h`}</h2>
+                <div className="stat-footer">Taxa de chuva registrada nas estações de Recife</div>
               </div>
               <div className="stat-card live-pulse-border-blue">
-                <div className="stat-header"><span>Lâmina d'água</span><span className="live-tag blue">ONLINE</span></div>
-                <h2>{liveWaterLevel} <span className="unit">m</span></h2>
-                <div className="stat-footer">Sensores ultrassônicos em vias críticas</div>
+                <div className="stat-header"><span>Lâmina d'Água Estimada</span><span className="live-tag blue">ONLINE</span></div>
+                <h2>{loadingApi ? 'Carregando...' : `${waterLevel} m`}</h2>
+                <div className="stat-footer">Calculado para os principais corredores urbanos</div>
               </div>
             </div>
 
             <div className="chart-card-box">
-              <h3>Histórico de Saturação de Solo</h3>
-              <div className="live-bar-chart">
-                {chartData.map((val, idx) => (
-                  <div key={idx} className="chart-bar-container">
-                    <div className="chart-bar-fill" style={{ height: `${val}%` }}>
-                      <span className="bar-tooltip">{val}%</span>
+              <h3>Status dos Pontos Críticos em Recife</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
+                {zones.map(z => {
+                  const nivelCalculado = (parseFloat(waterLevel) + (z.raio === 600 ? 0.3 : 0.1)).toFixed(2);
+                  const isCritico = nivelCalculado > 0.8;
+                  return (
+                    <div key={z.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-main)', padding: '12px 16px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                      <div>
+                        <strong>{z.nome}</strong>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Lâmina d'água: {nivelCalculado}m</div>
+                      </div>
+                      <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: 'bold', background: isCritico ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)', color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
+                        {isCritico ? 'Risco Alto' : 'Atenção'}
+                      </span>
                     </div>
-                    <span className="chart-label">T-{6 - idx}h</span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>
         )}
 
-        {/* MAPA COM DUAS CAMADAS: DARK E SATÉLITE */}
+        {/* MAPA COM MODO ESCURO E SATÉLITE */}
         {activeTab === 'mapa' && (
           <div className="fade-in fullscreen-tab">
             <div className="map-container-box">
@@ -220,7 +315,7 @@ function MainApp({ user, onLogout }) {
                   <LayersControl.BaseLayer checked name="Modo Escuro (Ruas)">
                     <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
                   </LayersControl.BaseLayer>
-                  <LayersControl.BaseLayer name="Modo Satélite">
+                  <LayersControl.BaseLayer name="Modo Satélite (Real)">
                     <TileLayer 
                       url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" 
                       attribution="Tiles &copy; Esri"
@@ -228,20 +323,30 @@ function MainApp({ user, onLogout }) {
                   </LayersControl.BaseLayer>
                 </LayersControl>
                 
-                {zones.map(z => (
-                  <Circle key={z.id} center={z.coords} radius={z.raio} pathOptions={{ color: z.cor, fillColor: z.cor, fillOpacity: 0.4 }}>
-                    <Popup><div style={{ color: '#000' }}><strong>{z.nome}</strong><br/>Status: {z.status}<br/>Lâmina: {z.nivel}m</div></Popup>
-                  </Circle>
-                ))}
+                {zones.map(z => {
+                  const nivelCalculado = (parseFloat(waterLevel) + (z.raio === 600 ? 0.3 : 0.1)).toFixed(2);
+                  const cor = nivelCalculado > 0.8 ? '#ef4444' : '#f59e0b';
+                  return (
+                    <Circle key={z.id} center={z.coords} radius={z.raio} pathOptions={{ color: cor, fillColor: cor, fillOpacity: 0.4 }}>
+                      <Popup>
+                        <div style={{ color: '#000' }}>
+                          <strong>{z.nome}</strong><br/>
+                          Chuva Atual: {realRain} mm/h<br/>
+                          Nível estimado: {nivelCalculado}m
+                        </div>
+                      </Popup>
+                    </Circle>
+                  );
+                })}
               </MapContainer>
             </div>
           </div>
         )}
 
-        {/* FORMULÁRIO VEÍCULOS FIPE */}
+        {/* VEÍCULOS FIPE */}
         {activeTab === 'veiculos' && (
           <div className="fade-in scrollable-tab">
-            <header className="content-title-header"><h1>Sua Garagem Inteligente</h1><p>Veículos validados pelas fabricantes oficiais.</p></header>
+            <header className="content-title-header"><h1>Sua Garagem Inteligente</h1><p>Veículos validados pela API oficial da FIPE.</p></header>
             <div className="form-card">
               <form onSubmit={handleSaveVeiculo} className="grid-form">
                 <div className="input-group">
@@ -270,7 +375,7 @@ function MainApp({ user, onLogout }) {
               <h3>Veículos Registrados</h3>
               <div className="veiculos-grid">
                 {veiculos.filter(v => v.userId === user.email).map(v => (
-                  <div key={v.id} className="veiculo-card"><Icons.Car /><div className="v-info"><strong>{v.marca} - {v.modelo}</strong><span>Segurança de escoamento: {v.altura}cm</span></div></div>
+                  <div key={v.id} className="veiculo-card"><Icons.Car /><div className="v-info"><strong>{v.marca} - {v.modelo}</strong><span>Altura de Segurança: {v.altura}cm</span></div></div>
                 ))}
               </div>
             </div>
@@ -280,7 +385,7 @@ function MainApp({ user, onLogout }) {
         {/* REPORTAR */}
         {activeTab === 'reportar' && (
           <div className="fade-in scrollable-tab">
-            <header className="content-title-header"><h1>Reportar Foco de Alagamento</h1><p>Alerte motoristas sobre riscos e bloqueios na pista.</p></header>
+            <header className="content-title-header"><h1>Reportar Foco de Alagamento</h1><p>Alerte a comunidade sobre pontos intransitáveis.</p></header>
             <div className="form-card">
               <form onSubmit={handleSaveReporte} className="grid-form">
                 <div className="input-group full-width">
@@ -291,8 +396,8 @@ function MainApp({ user, onLogout }) {
                     <option>Buraco Oculto sob a Água</option>
                   </select>
                 </div>
-                <div className="input-group full-width"><label>Localização / Referência</label><input required value={formReporte.local} onChange={e => setFormReporte({...formReporte, local: e.target.value})} /></div>
-                <div className="input-group full-width"><label>Relato / Detalhes</label><textarea required rows="3" value={formReporte.descricao} onChange={e => setFormReporte({...formReporte, descricao: e.target.value})} placeholder="Como está o escoamento no local?"></textarea></div>
+                <div className="input-group full-width"><label>Localização / Referência em Recife</label><input required value={formReporte.local} onChange={e => setFormReporte({...formReporte, local: e.target.value})} /></div>
+                <div className="input-group full-width"><label>Relato / Detalhes</label><textarea required rows="3" value={formReporte.descricao} onChange={e => setFormReporte({...formReporte, descricao: e.target.value})} placeholder="Situação no local..."></textarea></div>
                 <button type="submit" className="btn-danger">Enviar Alerta Comunitário</button>
               </form>
             </div>
@@ -306,10 +411,10 @@ function MainApp({ user, onLogout }) {
               <div className="success-icon-badge">
                 <svg viewBox="0 0 24 24" width="36" height="36" stroke="#10b981" strokeWidth="3" fill="none" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
               </div>
-              <h2>Alerta Enviado!</h2>
-              <p>Obrigado por ajudar a cidade. <strong>A nossa equipe irá verificar e validar</strong> as informações antes de publicá-las no mapa geral.</p>
+              <h2>Alerta Registrado!</h2>
+              <p>Obrigado por ajudar a mapear os riscos em Recife.</p>
               <div className="success-card-buttons">
-                <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Ir para a Central</button>
+                <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Voltar à Central</button>
               </div>
             </div>
           </div>
@@ -318,9 +423,9 @@ function MainApp({ user, onLogout }) {
         {/* ADMIN */}
         {activeTab === 'admin_reportes' && (
           <div className="fade-in scrollable-tab">
-            <header className="content-title-header"><h1>Moderação de Alertas</h1><p>Aprove ou rejeite ocorrências urbanas enviadas.</p></header>
+            <header className="content-title-header"><h1>Painel de Moderação</h1><p>Gerencie ocorrências enviadas pelos usuários.</p></header>
             <div className="list-card">
-              {reportes.length === 0 ? <p style={{color: '#94a3b8'}}>Nenhuma ocorrência aguardando triagem.</p> : (
+              {reportes.length === 0 ? <p style={{color: '#94a3b8'}}>Nenhuma ocorrência aguardando validação.</p> : (
                 <table style={{width: '100%', borderCollapse: 'collapse', color: 'white', textAlign: 'left'}}>
                   <thead><tr style={{borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)'}}><th style={{padding: '12px'}}>Autor</th><th style={{padding: '12px'}}>Local</th><th style={{padding: '12px'}}>Status</th></tr></thead>
                   <tbody>{reportes.map(r => (<tr key={r.id} style={{borderBottom: '1px solid var(--border-color)'}}><td style={{padding: '12px'}}>{r.autor}</td><td style={{padding: '12px'}}>{r.local}</td><td style={{padding: '12px', color: 'var(--warning)'}}>{r.status}</td></tr>))}</tbody>
@@ -353,7 +458,7 @@ function MainApp({ user, onLogout }) {
       {user.tipo === 'admin' && (
         <div className="mobile-bottom-nav">
           <button className={`bottom-nav-item ${activeTab === 'admin_reportes' ? 'active' : ''}`} onClick={() => setActiveTab('admin_reportes')}>
-            <Icons.Check /><span>Validar Alertas</span>
+            <Icons.Check /><span>Validar</span>
           </button>
         </div>
       )}
@@ -363,9 +468,27 @@ function MainApp({ user, onLogout }) {
 
 export default function App() {
   const [user, setUser] = useState(null);
+
   useEffect(() => {
+    // Recupera a sessão ativa ao recarregar a página
     const session = localStorage.getItem('floody_active_session');
-    if (session) setUser(JSON.parse(session));
+    if (session) {
+      setUser(JSON.parse(session));
+    }
   }, []);
-  return <>{!user ? <AuthScreen onLogin={setUser} /> : <MainApp user={user} onLogout={() => { localStorage.removeItem('floody_active_session'); setUser(null); }} />}</>;
+
+  const handleLogout = () => {
+    localStorage.removeItem('floody_active_session');
+    setUser(null);
+  };
+
+  return (
+    <>
+      {!user ? (
+        <AuthScreen onLogin={setUser} />
+      ) : (
+        <MainApp user={user} onLogout={handleLogout} />
+      )}
+    </>
+  );
 }
