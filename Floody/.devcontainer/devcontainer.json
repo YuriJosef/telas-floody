@@ -1,0 +1,4 @@
+{
+  "name": "Floody Codespace",
+  "postCreateCommand": "npm install"
+}
