@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Circle, Popup, LayersControl, Polyline, Marker, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Polygon, Popup, LayersControl, Polyline, Marker, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
@@ -94,17 +94,42 @@ const Icons = {
       <circle cx="11" cy="11" r="8"></circle>
       <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
     </svg>
+  ),
+  Close: () => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"></line>
+      <line x1="6" y1="6" x2="18" y2="18"></line>
+    </svg>
   )
 };
 
-// Auxiliar para ajustar câmera do mapa na rota
-function RouteBoundsAdjuster({ coords }) {
+// Gerador de Mancha Orgânica Assimétrica Única
+function gerarManchaOrganicaDiferenciada([centerLat, centerLng], raioKm, seed = 1, fatorEscala = 1) {
+  const pontos = [];
+  const numPontos = 16;
+  const raioGraus = (raioKm * fatorEscala) / 111;
+
+  for (let i = 0; i < numPontos; i++) {
+    const angulo = (i / numPontos) * (2 * Math.PI);
+    const variacao = 0.65 + 0.3 * Math.sin(seed * angulo * 2) + 0.25 * Math.cos((seed + i) * 1.5) + 0.1 * Math.sin(i * 3);
+    const r = raioGraus * variacao;
+    const lat = centerLat + r * Math.sin(angulo);
+    const lng = centerLng + (r * Math.cos(angulo)) / Math.cos((centerLat * Math.PI) / 180);
+    pontos.push([lat, lng]);
+  }
+  return pontos;
+}
+
+// Ajustador de câmera do mapa
+function RouteBoundsAdjuster({ coords, centerCoords }) {
   const map = useMap();
   useEffect(() => {
-    if (coords && coords.length > 0) {
+    if (centerCoords) {
+      map.setView(centerCoords, 16, { animate: true });
+    } else if (coords && coords.length > 0) {
       map.fitBounds(coords, { padding: [50, 50] });
     }
-  }, [coords, map]);
+  }, [coords, centerCoords, map]);
   return null;
 }
 
@@ -216,15 +241,18 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [reportes, setReportes] = useState([]);
   const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: 'Av. Agamenon Magalhães, Recife' });
   
-  // Meteorologia Real
+  // Meteorologia Real e Monitoramento Global
   const [realRain, setRealRain] = useState(0);
   const [waterLevel, setWaterLevel] = useState(0.4);
   const [loadingApi, setLoadingApi] = useState(true);
+  const [cidadeAtualNome, setCidadeAtualNome] = useState('Sua Localização');
+  const [buscaCentralQuery, setBuscaCentralQuery] = useState('');
+  const [buscaCentralSuggestions, setBuscaCentralSuggestions] = useState([]);
   
-  // Mapa de Calor (Heatmap Toggle)
+  // Mapa de Calor Toggle
   const [showHeatmap, setShowHeatmap] = useState(true);
   
-  // Estados de Pesquisa Estilo Google Maps / Waze
+  // Rota e Navegação Ao Vivo
   const [origemQuery, setOrigemQuery] = useState('Recife, PE');
   const [origemCoords, setOrigemCoords] = useState([-8.05428, -34.8813]);
   const [origemSuggestions, setOrigemSuggestions] = useState([]);
@@ -237,6 +265,8 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [routeInfo, setRouteInfo] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
   const [loadingGPS, setLoadingGPS] = useState(false);
+  
+  const [isNavigating, setIsNavigating] = useState(false);
 
   // FIPE States
   const [marcas, setMarcas] = useState([]);
@@ -245,35 +275,96 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [modeloSelecionado, setModeloSelecionado] = useState('');
   const [alturaCarro, setAlturaCarro] = useState('');
 
-  const recifeCenter = [-8.05428, -34.8813];
+  const defaultCenter = [-8.05428, -34.8813];
   
-  const zones = [
-    { id: 'z1', nome: "Av. Agamenon Magalhães", coords: [-8.0470, -34.8770], raio: 650, severidade: 0.9 },
-    { id: 'z2', nome: "Av. Domingos Ferreira (Boa Viagem)", coords: [-8.1130, -34.8940], raio: 550, severidade: 0.7 },
-    { id: 'z3', nome: "Av. Recife (Areias/Iputinga)", coords: [-8.0820, -34.9250], raio: 750, severidade: 0.95 },
-    { id: 'z4', nome: "Largo da Paz (Afogados)", coords: [-8.0775, -34.9030], raio: 500, severidade: 0.85 },
-    { id: 'z5', nome: "Av. Mascarenhas de Moraes (Imbiribeira)", coords: [-8.1050, -34.9120], raio: 700, severidade: 0.88 },
-    { id: 'z6', nome: "Pan Nordestina (Olinda)", coords: [-8.0120, -34.8620], raio: 600, severidade: 0.75 }
-  ];
+  // DIVERSAS MANCHAS ORGÂNICAS EM RECIFE E OUTRAS CIDADES
+  const [zones] = useState([
+    { id: 1, nome: "Av. Agamenon Magalhães (Recife)", coords: [-8.0470, -34.8770], raioKm: 0.85, severidade: 0.9, seed: 2.1 },
+    { id: 2, nome: "Largo da Paz / Afogados (Recife)", coords: [-8.0775, -34.9030], raioKm: 0.65, severidade: 0.85, seed: 3.4 },
+    { id: 3, nome: "Av. Recife / Areias (Recife)", coords: [-8.0820, -34.9250], raioKm: 0.95, severidade: 0.95, seed: 1.8 },
+    { id: 4, nome: "Av. Mascarenhas de Moraes (Imbiribeira)", coords: [-8.1050, -34.9120], raioKm: 0.75, severidade: 0.88, seed: 4.5 },
+    { id: 5, nome: "Pan Nordestina (Olinda)", coords: [-8.0120, -34.8620], raioKm: 0.70, severidade: 0.75, seed: 5.2 },
+    { id: 6, nome: "Av. Paulista (São Paulo)", coords: [-23.5615, -46.6565], raioKm: 1.10, severidade: 0.85, seed: 6.3 }
+  ]);
+
+  const fetchWeatherForCoords = (lat, lng, nomeLocal) => {
+    setLoadingApi(true);
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=precipitation,rain,showers`)
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.current) {
+          const currentPrecip = data.current.precipitation || data.current.rain || 0;
+          setRealRain(currentPrecip);
+          setWaterLevel((0.2 + (currentPrecip * 0.15)).toFixed(2));
+        }
+        if (nomeLocal) setCidadeAtualNome(nomeLocal);
+        setLoadingApi(false);
+      })
+      .catch(() => setLoadingApi(false));
+  };
 
   useEffect(() => {
-    const fetchRealData = () => {
-      fetch('https://api.open-meteo.com/v1/forecast?latitude=-8.05428&longitude=-34.8813&current=precipitation,rain,showers')
-        .then(res => res.json())
-        .then(data => {
-          if (data && data.current) {
-            const currentPrecip = data.current.precipitation || data.current.rain || 0;
-            setRealRain(currentPrecip);
-            setWaterLevel((0.2 + (currentPrecip * 0.15)).toFixed(2));
-          }
-          setLoadingApi(false);
-        })
-        .catch(() => setLoadingApi(false));
-    };
-    fetchRealData();
-    const interval = setInterval(fetchRealData, 60000);
-    return () => clearInterval(interval);
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          setOrigemCoords([lat, lng]);
+          fetchWeatherForCoords(lat, lng, 'Sua Posição Atual');
+        },
+        () => {
+          fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
+        },
+        { timeout: 5000 }
+      );
+    } else {
+      fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
+    }
   }, []);
+
+  const handleCentralSearch = async (e) => {
+    e.preventDefault();
+    if (!buscaCentralQuery || buscaCentralQuery.trim().length < 2) return;
+    try {
+      const termo = encodeURIComponent(buscaCentralQuery.trim());
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termo}&limit=1`);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lon = parseFloat(data[0].lon);
+        fetchWeatherForCoords(lat, lon, data[0].display_name);
+        setBuscaCentralSuggestions([]);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleCentralInputChange = (texto) => {
+    setBuscaCentralQuery(texto);
+    if (texto.length >= 3) {
+      searchAddress(texto, setBuscaCentralSuggestions);
+    } else {
+      setBuscaCentralSuggestions([]);
+    }
+  };
+
+  useEffect(() => {
+    let watchId = null;
+    if (isNavigating && navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const coords = [pos.coords.latitude, pos.coords.longitude];
+          setOrigemCoords(coords);
+        },
+        (err) => console.error(err),
+        { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
+      );
+    }
+    return () => {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    };
+  }, [isNavigating]);
 
   useEffect(() => {
     setVeiculos(JSON.parse(localStorage.getItem('floody_veiculos')) || []);
@@ -295,15 +386,13 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     }
   }, [marcaSelecionada]);
 
-  // Geocodificação Ampla (Estilo Google Maps / Waze para qualquer rua, número ou lugar)
   const searchAddress = async (query, setSuggestions) => {
     if (!query || query.length < 3) {
       setSuggestions([]);
       return;
     }
     try {
-      // Prioriza Pernambuco/Brasil para encontrar ruas, bairros e estabelecimentos exatos
-      const termoBusca = encodeURIComponent(`${query}, Pernambuco, Brasil`);
+      const termoBusca = encodeURIComponent(query);
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termoBusca}&limit=6&addressdetails=1`);
       const data = await res.json();
       setSuggestions(data || []);
@@ -312,10 +401,9 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     }
   };
 
-  // Buscar localização dinâmica no formulário se o usuário apertar Enter ou não clicar na lista
   const geocodeEnderecoDireto = async (enderecoTexto) => {
     try {
-      const termo = encodeURIComponent(`${enderecoTexto}, Pernambuco, Brasil`);
+      const termo = encodeURIComponent(enderecoTexto);
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termo}&limit=1`);
       const data = await res.json();
       if (data && data.length > 0) {
@@ -327,22 +415,8 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     return null;
   };
 
-  // Pegar Localização Atual do Usuário (GPS com cache inteligente)
   const handleUseGPS = () => {
-    if (!navigator.geolocation) {
-      alert('Seu navegador não suporta geolocalização.');
-      return;
-    }
-
-    const gpsSalvo = localStorage.getItem('floody_last_gps');
-    if (gpsSalvo) {
-      const coordsSalvas = JSON.parse(gpsSalvo);
-      setOrigemCoords(coordsSalvas);
-      setOrigemQuery('Minha Localização Atual');
-      setOrigemSuggestions([]);
-      return;
-    }
-
+    if (!navigator.geolocation) return;
     setLoadingGPS(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -350,18 +424,15 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
         setOrigemCoords(coords);
         setOrigemQuery('Minha Localização Atual');
         setOrigemSuggestions([]);
-        localStorage.setItem('floody_last_gps', JSON.stringify(coords));
         setLoadingGPS(false);
       },
       () => {
-        alert('Não foi possível obter sua localização. Permita o acesso ao GPS no seu navegador.');
         setLoadingGPS(false);
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+      { enableHighAccuracy: true, timeout: 8000 }
     );
   };
 
-  // Busca de Rota Exata via API OSRM
   const handleBuscarRota = async (e) => {
     e.preventDefault();
     setLoadingRoute(true);
@@ -369,20 +440,17 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     let pOrigem = origemCoords;
     let pDestino = destinoCoords;
 
-    // Se o usuário digitou o endereço de origem mas não selecionou na sugestão, resolve o endereço exato
     if (!pOrigem && origemQuery) {
       pOrigem = await geocodeEnderecoDireto(origemQuery);
       if (pOrigem) setOrigemCoords(pOrigem);
     }
 
-    // Se o usuário digitou o endereço de destino mas não selecionou na sugestão, resolve o endereço exato
     if (!pDestino && destinoQuery) {
       pDestino = await geocodeEnderecoDireto(destinoQuery);
       if (pDestino) setDestinoCoords(pDestino);
     }
 
     if (!pOrigem || !pDestino) {
-      alert('Localização não encontrada. Digite o endereço completo (Rua, Número, Bairro).');
       setLoadingRoute(false);
       return;
     }
@@ -421,15 +489,21 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
           origem: origemQuery,
           destino: destinoQuery
         });
-      } else {
-        alert('Não foi possível traçar uma rota terrestre entre estes dois pontos.');
+        setIsNavigating(true);
       }
     } catch (err) {
-      console.error('Erro ao calcular rota:', err);
-      alert('Erro ao conectar com o serviço de rotas.');
+      console.error(err);
     } finally {
       setLoadingRoute(false);
     }
+  };
+
+  const handleCancelRoute = () => {
+    setRouteCoords([]);
+    setRouteInfo(null);
+    setDestinoQuery('');
+    setDestinoCoords(null);
+    setIsNavigating(false);
   };
 
   const handleSaveVeiculo = (e) => {
@@ -452,10 +526,9 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     setActiveTab('sucesso_reporte');
   };
 
-  // Provedores de Mapa Sem Limites e Sem Erros de Zoom / API Key
   const mapTileUrl = theme === 'dark'
-    ? "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-    : "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+    ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+    : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
 
   return (
     <div className="floody-pro-layout">
@@ -513,14 +586,56 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
         {activeTab === 'dashboard' && (
           <div className="fade-in scrollable-tab">
             <header className="content-title-header">
-              <h1>Central de Monitoramento Recife</h1>
-              <p>Dados obtidos da API pública meteorológica em tempo real.</p>
+              <h1>Central de Monitoramento Global</h1>
+              <p>Monitoramento meteorológico em tempo real focado em sua localização e pesquisável para qualquer lugar do mundo.</p>
             </header>
+
+            {/* FORMULÁRIO DE BUSCA REORGANIZADO */}
+            <form onSubmit={handleCentralSearch} style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', width: '100%' }}>
+              <div style={{ position: 'relative', width: '100%' }}>
+                <div className="route-input-field" style={{ width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 16px' }}>
+                  <Icons.Search />
+                  <input
+                    type="text"
+                    style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text-main)', fontSize: '0.95rem', outline: 'none' }}
+                    placeholder="Pesquisar cidade, estado ou país existente (Ex: São Paulo, Paris, Tóquio)..."
+                    value={buscaCentralQuery}
+                    onChange={(e) => handleCentralInputChange(e.target.value)}
+                  />
+                </div>
+                {buscaCentralSuggestions.length > 0 && (
+                  <div className="suggestions-dropdown" style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 99, background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '10px', marginTop: '4px', maxHeight: '200px', overflowY: 'auto' }}>
+                    {buscaCentralSuggestions.map((s, idx) => (
+                      <div
+                        key={idx}
+                        className="suggestion-item"
+                        style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' }}
+                        onClick={() => {
+                          setBuscaCentralQuery(s.display_name);
+                          fetchWeatherForCoords(parseFloat(s.lat), parseFloat(s.lon), s.display_name);
+                          setBuscaCentralSuggestions([]);
+                        }}
+                      >
+                        {s.display_name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button 
+                type="submit" 
+                className="btn-primary" 
+                style={{ width: '100%', padding: '14px', borderRadius: '10px', fontWeight: 'bold', fontSize: '0.95rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
+              >
+                <Icons.Search /> Consultar Monitoramento da Cidade
+              </button>
+            </form>
+
             <div className="live-stats-grid">
               <div className="stat-card">
-                <div className="stat-header"><span>Precipitação Real (Open-Meteo)</span><span className="live-tag">RECIFE AO VIVO</span></div>
+                <div className="stat-header"><span>Precipitação Real (Open-Meteo)</span><span className="live-tag">AO VIVO</span></div>
                 <h2>{loadingApi ? 'Carregando...' : `${realRain} mm/h`}</h2>
-                <div className="stat-footer">Taxa de chuva instantânea na região</div>
+                <div className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cidadeAtualNome}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-header"><span>Lâmina d'Água Estimada</span><span className="live-tag blue">ONLINE</span></div>
@@ -529,7 +644,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
               </div>
             </div>
             <div className="chart-card-box" style={{ marginTop: '20px' }}>
-              <h3>Status dos Pontos Críticos em Recife</h3>
+              <h3>Status dos Pontos Críticos Globais Monitorados</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
                 {zones.map(z => {
                   const nivelCalculado = (parseFloat(waterLevel) + (z.severidade * 0.3)).toFixed(2);
@@ -538,7 +653,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                     <div key={z.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-main)', padding: '12px 16px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
                       <div>
                         <strong>{z.nome}</strong>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Acúmulo: {nivelCalculado}m</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Acúmulo Estimado: {nivelCalculado}m</div>
                       </div>
                       <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: 'bold', background: isCritico ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)', color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
                         {isCritico ? 'Risco Alto' : 'Atenção'}
@@ -551,16 +666,24 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
           </div>
         )}
 
-        {/* MAPA COM BUSCA LIVRE ESTILO GOOGLE MAPS / WAZE */}
+        {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS MÚLTIPLAS */}
         {activeTab === 'mapa' && (
           <div className="fade-in fullscreen-tab">
-            {/* PAINEL FLUTUANTE DE ROTA */}
             <div className="route-floating-panel">
-              <div className="route-panel-title">
-                <Icons.Navigation /> Planejar Trajeto Seguro
+              <div className="route-panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span><Icons.Navigation /> Navegação Segura Ao Vivo</span>
+                {routeInfo && (
+                  <button 
+                    type="button" 
+                    onClick={handleCancelRoute} 
+                    style={{ background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: '6px', padding: '4px 8px', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    title="Cancelar rota atual"
+                  >
+                    <Icons.Close /> Cancelar Rota
+                  </button>
+                )}
               </div>
               <form onSubmit={handleBuscarRota} className="route-inputs">
-                {/* CAMPO DE ORIGEM COM GPS */}
                 <div className="search-box-group">
                   <div className="search-box-header">
                     <span className="search-label">Ponto de Partida:</span>
@@ -572,7 +695,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                     <Icons.Search />
                     <input
                       type="text"
-                      placeholder="Digite rua, bairro ou cidade de partida..."
+                      placeholder="Digite rua, beco ou cidade..."
                       value={origemQuery}
                       onChange={(e) => {
                         setOrigemQuery(e.target.value);
@@ -596,14 +719,13 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   )}
                 </div>
 
-                {/* CAMPO DE DESTINO */}
                 <div className="search-box-group">
-                  <span className="search-label">Destino (Rua, Número, Bairro):</span>
+                  <span className="search-label">Destino Global (Qualquer lugar do mundo):</span>
                   <div className="route-input-field">
                     <Icons.Search />
                     <input
                       type="text"
-                      placeholder="Ex: Naziazeno Barreto, Jardim Jordão, 128"
+                      placeholder="Ex: Av. Paulista, São Paulo / Rua X, Bairro Y"
                       value={destinoQuery}
                       onChange={(e) => {
                         setDestinoQuery(e.target.value);
@@ -628,7 +750,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                 </div>
 
                 <button type="submit" disabled={loadingRoute} className="btn-primary btn-route-search">
-                  {loadingRoute ? 'Calculando Trajeto...' : 'Traçar Rota Segura'}
+                  {loadingRoute ? 'Calculando Trajeto...' : 'Iniciar Navegação Ao Vivo'}
                 </button>
               </form>
 
@@ -647,30 +769,32 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                     <strong>{routeInfo.chuvaDestino}</strong>
                   </div>
                   <div className="route-info-row" style={{ marginTop: '14px' }}>
-                    <span>Risco na Pista:</span>
+                    <span>Status na Pista:</span>
                     <span className="route-info-tag" style={{ background: routeInfo.bgRisco }}>
                       {routeInfo.statusRisco}
                     </span>
+                  </div>
+                  <div style={{ marginTop: '10px', fontSize: '0.75rem', color: 'var(--success)', textAlign: 'center', fontWeight: 'bold' }}>
+                    🟢 Navegação em tempo real ativa (Acompanhando deslocamento)
                   </div>
                 </div>
               )}
             </div>
 
-            {/* CONTROLE SUPERIOR DIREITO MAPA DE CALOR */}
             <div className="heatmap-controls-overlay">
               <button
                 className="heatmap-toggle-btn"
                 onClick={() => setShowHeatmap(!showHeatmap)}
                 style={{ borderColor: showHeatmap ? 'var(--primary)' : 'var(--border-color)' }}
               >
-                <Icons.Flame /> {showHeatmap ? 'Modo Calor: LIGADO' : 'Modo Calor: DESLIGADO'}
+                <Icons.Flame /> {showHeatmap ? 'Espelhos d\'Água: LIGADO' : 'Espelhos d\'Água: DESLIGADO'}
               </button>
             </div>
 
             <div className="map-container-box">
-              <MapContainer center={recifeCenter} zoom={13} maxZoom={19} style={{ height: '100%', width: '100%' }}>
+              <MapContainer center={defaultCenter} zoom={13} maxZoom={19} style={{ height: '100%', width: '100%' }}>
                 <LayersControl position="topright">
-                  <LayersControl.BaseLayer checked name="Visão Automática (Tema)">
+                  <LayersControl.BaseLayer checked name="Visão de Ruas, Obras e Aeroportos">
                     <TileLayer url={mapTileUrl} maxZoom={19} />
                   </LayersControl.BaseLayer>
                   <LayersControl.BaseLayer name="Visão de Satélite Real">
@@ -678,29 +802,35 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   </LayersControl.BaseLayer>
                 </LayersControl>
 
-                {origemCoords && <Marker position={origemCoords}><Popup>Origem: {origemQuery}</Popup></Marker>}
+                {origemCoords && <Marker position={origemCoords}><Popup>Sua Posição Atual: {origemQuery}</Popup></Marker>}
                 {destinoCoords && <Marker position={destinoCoords}><Popup>Destino: {destinoQuery}</Popup></Marker>}
 
+                {/* MÚLTIPLAS MANCHAS ORGÂNICAS ESPALHADAS NO MAPA */}
                 {zones.map(z => {
                   const valorCalculado = parseFloat(waterLevel) + (z.severidade * 0.3);
                   const isCritico = valorCalculado > 0.75;
                   if (showHeatmap) {
-                    const coreColor = isCritico ? '#a855f7' : '#ef4444';
-                    const midColor = isCritico ? '#ef4444' : '#f59e0b';
-                    const outerColor = isCritico ? '#f59e0b' : '#10b981';
+                    const coreColor = isCritico ? '#ef4444' : '#f59e0b';
+                    const midColor = isCritico ? '#f59e0b' : '#3b82f6';
+                    const outerColor = isCritico ? '#3b82f6' : '#10b981';
+
+                    const pExterna = gerarManchaOrganicaDiferenciada(z.coords, z.raioKm, z.seed, 1.4);
+                    const pMedia = gerarManchaOrganicaDiferenciada(z.coords, z.raioKm, z.seed, 0.9);
+                    const pNucleo = gerarManchaOrganicaDiferenciada(z.coords, z.raioKm, z.seed, 0.45);
+
                     return (
-                      <React.Fragment key={`heat-${z.id}`}>
-                        <Circle center={z.coords} radius={z.raio * 1.4} pathOptions={{ color: 'transparent', fillColor: outerColor, fillOpacity: 0.15 }} />
-                        <Circle center={z.coords} radius={z.raio * 0.9} pathOptions={{ color: 'transparent', fillColor: midColor, fillOpacity: 0.28 }} />
-                        <Circle center={z.coords} radius={z.raio * 0.4} pathOptions={{ color: coreColor, fillColor: coreColor, fillOpacity: 0.55, weight: 1 }}>
+                      <React.Fragment key={`heat-org-${z.id}`}>
+                        <Polygon positions={pExterna} pathOptions={{ stroke: false, fillColor: outerColor, fillOpacity: 0.18 }} />
+                        <Polygon positions={pMedia} pathOptions={{ stroke: false, fillColor: midColor, fillOpacity: 0.35 }} />
+                        <Polygon positions={pNucleo} pathOptions={{ color: coreColor, weight: 1.5, fillColor: coreColor, fillOpacity: 0.65 }}>
                           <Popup>
                             <div style={{ color: '#000' }}>
-                              <strong>Núcleo Térmico: {z.nome}</strong><br />
+                              <strong>Espelho d'Água / Alagamento: {z.nome}</strong><br />
                               Intensidade do Risco: {(valorCalculado * 100).toFixed(0)}%<br />
                               Lâmina d'água estim.: {valorCalculado.toFixed(2)} m
                             </div>
                           </Popup>
-                        </Circle>
+                        </Polygon>
                       </React.Fragment>
                     );
                   }
@@ -710,7 +840,8 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                 {routeCoords.length > 0 && (
                   <Polyline positions={routeCoords} pathOptions={{ color: '#38bdf8', weight: 6, opacity: 0.8 }} />
                 )}
-                <RouteBoundsAdjuster coords={routeCoords} />
+                
+                <RouteBoundsAdjuster coords={routeCoords} centerCoords={isNavigating ? origemCoords : null} />
               </MapContainer>
             </div>
           </div>
@@ -781,7 +912,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   </select>
                 </div>
                 <div className="input-group full-width">
-                  <label>Localização / Referência em Recife</label>
+                  <label>Localização / Referência</label>
                   <input required value={formReporte.local} onChange={(e) => setFormReporte({ ...formReporte, local: e.target.value })} />
                 </div>
                 <div className="input-group full-width">
@@ -862,6 +993,11 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 export default function App() {
   const [user, setUser] = useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('floody_theme') || 'dark');
+
+  // ATUALIZAÇÃO DO TÍTULO DA ABA DO NAVEGADOR PARA "FLOODY"
+  useEffect(() => {
+    document.title = "Floody - Sistema Global de Monitoramento e Navegação";
+  }, []);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
