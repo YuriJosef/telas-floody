@@ -100,10 +100,25 @@ const Icons = {
       <line x1="18" y1="6" x2="6" y2="18"></line>
       <line x1="6" y1="6" x2="18" y2="18"></line>
     </svg>
+  ),
+  Star: ({ filled }) => (
+    <svg viewBox="0 0 24 24" width="18" height="18" stroke={filled ? "#f59e0b" : "var(--text-main)"} fill={filled ? "#f59e0b" : "none"} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+    </svg>
+  ),
+  ChevronDown: () => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9"></polyline>
+    </svg>
+  ),
+  ChevronUp: () => (
+    <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="18 15 12 9 6 15"></polyline>
+    </svg>
   )
 };
 
-// Gerador de Mancha Orgânica Assimétrica Única
+// Gerador de Mancha Orgânica Assimétrica
 function gerarManchaOrganicaDiferenciada([centerLat, centerLng], raioKm, seed = 1, fatorEscala = 1) {
   const pontos = [];
   const numPontos = 16;
@@ -246,8 +261,21 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [waterLevel, setWaterLevel] = useState(0.4);
   const [loadingApi, setLoadingApi] = useState(true);
   const [cidadeAtualNome, setCidadeAtualNome] = useState('Sua Localização');
+  const [currentCoords, setCurrentCoords] = useState([-8.05428, -34.8813]);
+  
   const [buscaCentralQuery, setBuscaCentralQuery] = useState('');
   const [buscaCentralSuggestions, setBuscaCentralSuggestions] = useState([]);
+
+  // Estados de Interação e Pesquisa Dinâmica de Qualquer Rua/Região
+  const [expandedZoneId, setExpandedZoneId] = useState(null);
+  const [filtroApenasFavoritos, setFiltroApenasFavoritos] = useState(false);
+  const [filtroTextoZona, setFiltroTextoZona] = useState('');
+  const [customSearchPoint, setCustomSearchPoint] = useState(null);
+  const [loadingCustomSearch, setLoadingCustomSearch] = useState(false);
+  
+  const [favoritos, setFavoritos] = useState(() => {
+    return JSON.parse(localStorage.getItem('floody_favoritos')) || [1, 2];
+  });
   
   // Mapa de Calor Toggle
   const [showHeatmap, setShowHeatmap] = useState(true);
@@ -277,14 +305,15 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const defaultCenter = [-8.05428, -34.8813];
   
-  // DIVERSAS MANCHAS ORGÂNICAS EM RECIFE E OUTRAS CIDADES
+  // Base de Pontos Críticos Padrão da Região
   const [zones] = useState([
-    { id: 1, nome: "Av. Agamenon Magalhães (Recife)", coords: [-8.0470, -34.8770], raioKm: 0.85, severidade: 0.9, seed: 2.1 },
-    { id: 2, nome: "Largo da Paz / Afogados (Recife)", coords: [-8.0775, -34.9030], raioKm: 0.65, severidade: 0.85, seed: 3.4 },
-    { id: 3, nome: "Av. Recife / Areias (Recife)", coords: [-8.0820, -34.9250], raioKm: 0.95, severidade: 0.95, seed: 1.8 },
-    { id: 4, nome: "Av. Mascarenhas de Moraes (Imbiribeira)", coords: [-8.1050, -34.9120], raioKm: 0.75, severidade: 0.88, seed: 4.5 },
-    { id: 5, nome: "Pan Nordestina (Olinda)", coords: [-8.0120, -34.8620], raioKm: 0.70, severidade: 0.75, seed: 5.2 },
-    { id: 6, nome: "Av. Paulista (São Paulo)", coords: [-23.5615, -46.6565], raioKm: 1.10, severidade: 0.85, seed: 6.3 }
+    { id: 1, nome: "Av. Agamenon Magalhães (Recife)", coords: [-8.0470, -34.8770], raioKm: 0.85, severidade: 0.9, seed: 2.1, via: "Corredor Norte/Sul", drenagem: "Baixa", isLocal: true },
+    { id: 2, nome: "Largo da Paz / Afogados (Recife)", coords: [-8.0775, -34.9030], raioKm: 0.65, severidade: 0.85, seed: 3.4, via: "Estrada dos Remédios", drenagem: "Crítica", isLocal: true },
+    { id: 3, nome: "Av. Recife / Areias (Recife)", coords: [-8.0820, -34.9250], raioKm: 0.95, severidade: 0.95, seed: 1.8, via: "Eixo Zona Sul-Oeste", drenagem: "Crítica", isLocal: true },
+    { id: 4, nome: "Av. Mascarenhas de Moraes (Imbiribeira)", coords: [-8.1050, -34.9120], raioKm: 0.75, severidade: 0.88, seed: 4.5, via: "Acesso Aeroporto", drenagem: "Média", isLocal: true },
+    { id: 5, nome: "Pan Nordestina (Olinda)", coords: [-8.0120, -34.8620], raioKm: 0.70, severidade: 0.75, seed: 5.2, via: "Av. Olinda", drenagem: "Baixa", isLocal: true },
+    { id: 6, nome: "Av. Beira Mar (Jaboatão dos Guararapes)", coords: [-8.1820, -34.9180], raioKm: 0.80, severidade: 0.82, seed: 7.1, via: "Orla Piedade", drenagem: "Média", isLocal: true },
+    { id: 7, nome: "Av. Paulista (São Paulo)", coords: [-23.5615, -46.6565], raioKm: 1.10, severidade: 0.85, seed: 6.3, via: "Centro Expandido", drenagem: "Boa", isLocal: false }
   ]);
 
   const fetchWeatherForCoords = (lat, lng, nomeLocal) => {
@@ -298,29 +327,94 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
           setWaterLevel((0.2 + (currentPrecip * 0.15)).toFixed(2));
         }
         if (nomeLocal) setCidadeAtualNome(nomeLocal);
+        setCurrentCoords([lat, lng]);
         setLoadingApi(false);
       })
       .catch(() => setLoadingApi(false));
   };
 
   useEffect(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = pos.coords.latitude;
-          const lng = pos.coords.longitude;
-          setOrigemCoords([lat, lng]);
-          fetchWeatherForCoords(lat, lng, 'Sua Posição Atual');
-        },
-        () => {
-          fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
-        },
-        { timeout: 5000 }
-      );
-    } else {
-      fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
-    }
+    const initLocation = () => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const lat = pos.coords.latitude;
+            const lng = pos.coords.longitude;
+            setOrigemCoords([lat, lng]);
+            fetchWeatherForCoords(lat, lng, 'Sua Posição Atual');
+          },
+          () => {
+            fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
+          },
+          { timeout: 5000 }
+        );
+      } else {
+        fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
+      }
+    };
+
+    initLocation();
+
+    const liveTimer = setInterval(() => {
+      if (currentCoords) {
+        fetchWeatherForCoords(currentCoords[0], currentCoords[1], cidadeAtualNome);
+      }
+    }, 60000);
+
+    return () => clearInterval(liveTimer);
   }, []);
+
+  // BUSCA UNIVERSAL PADRONIZADA COM DESIGN EM DUAS LINHAS
+  const handleZonaSearchSubmit = async (e) => {
+    e.preventDefault();
+    if (!filtroTextoZona || filtroTextoZona.trim().length < 2) return;
+    setLoadingCustomSearch(true);
+    try {
+      const termo = encodeURIComponent(filtroTextoZona.trim());
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termo}&limit=1`);
+      const data = await res.json();
+      if (data && data.length > 0) {
+        const lat = parseFloat(data[0].lat);
+        const lon = parseFloat(data[0].lon);
+        
+        const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=precipitation,rain`);
+        const weatherData = await weatherRes.json();
+        const chuvaLocal = weatherData?.current?.precipitation || weatherData?.current?.rain || 0;
+        const laminaEstimada = (0.15 + (chuvaLocal * 0.18)).toFixed(2);
+
+        setCustomSearchPoint({
+          id: 999,
+          nome: data[0].display_name,
+          coords: [lat, lon],
+          raioKm: 0.5,
+          severidade: chuvaLocal > 2.0 ? 0.9 : 0.4,
+          via: data[0].name || filtroTextoZona,
+          drenagem: chuvaLocal > 3.0 ? "Crítica" : "Normal",
+          laminaEstimada: laminaEstimada,
+          chuvaLocal: chuvaLocal
+        });
+        setExpandedZoneId(999);
+      } else {
+        setCustomSearchPoint(null);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingCustomSearch(false);
+    }
+  };
+
+  const toggleFavorito = (id, e) => {
+    e.stopPropagation();
+    let novosFavoritos;
+    if (favoritos.includes(id)) {
+      novosFavoritos = favoritos.filter(fId => fId !== id);
+    } else {
+      novosFavoritos = [...favoritos, id];
+    }
+    setFavoritos(novosFavoritos);
+    localStorage.setItem('floody_favoritos', JSON.stringify(novosFavoritos));
+  };
 
   const handleCentralSearch = async (e) => {
     e.preventDefault();
@@ -530,6 +624,20 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
     : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
 
+  const termoPesquisado = filtroTextoZona.trim().toLowerCase();
+  
+  let zonasExibidas = zones.filter(z => {
+    const matchFavorito = !filtroApenasFavoritos || favoritos.includes(z.id);
+    if (termoPesquisado.length > 0) {
+      return matchFavorito && (z.nome.toLowerCase().includes(termoPesquisado) || (z.via && z.via.toLowerCase().includes(termoPesquisado)));
+    }
+    return matchFavorito && z.isLocal;
+  });
+
+  if (customSearchPoint) {
+    zonasExibidas = [customSearchPoint, ...zonasExibidas];
+  }
+
   return (
     <div className="floody-pro-layout">
       {/* MOBILE HEADER */}
@@ -590,7 +698,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
               <p>Monitoramento meteorológico em tempo real focado em sua localização e pesquisável para qualquer lugar do mundo.</p>
             </header>
 
-            {/* FORMULÁRIO DE BUSCA REORGANIZADO */}
+            {/* FORMULÁRIO DE BUSCA GLOBAL (CIDADES/PAÍSES) */}
             <form onSubmit={handleCentralSearch} style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', width: '100%' }}>
               <div style={{ position: 'relative', width: '100%' }}>
                 <div className="route-input-field" style={{ width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 16px' }}>
@@ -638,35 +746,175 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                 <div className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cidadeAtualNome}</div>
               </div>
               <div className="stat-card">
-                <div className="stat-header"><span>Lâmina d'Água Estimada</span><span className="live-tag blue">ONLINE</span></div>
+                <div className="stat-header"><span>Lâmina d'Água Estimada</span><span className="live-tag blue">ONLINE (A CADA 60S)</span></div>
                 <h2>{loadingApi ? 'Carregando...' : `${waterLevel} m`}</h2>
                 <div className="stat-footer">Nível estimado em corredores viários</div>
               </div>
             </div>
+
+            {/* SEÇÃO DE PONTOS CRÍTICOS COM DESIGN TOTALMENTE PADRONIZADO */}
             <div className="chart-card-box" style={{ marginTop: '20px' }}>
-              <h3>Status dos Pontos Críticos Globais Monitorados</h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
-                {zones.map(z => {
-                  const nivelCalculado = (parseFloat(waterLevel) + (z.severidade * 0.3)).toFixed(2);
-                  const isCritico = nivelCalculado > 0.75;
-                  return (
-                    <div key={z.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-main)', padding: '12px 16px', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-                      <div>
-                        <strong>{z.nome}</strong>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Acúmulo Estimado: {nivelCalculado}m</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
+                <h3>Status de Alagamento Pontos Críticos</h3>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => setFiltroApenasFavoritos(!filtroApenasFavoritos)}
+                    style={{
+                      background: filtroApenasFavoritos ? 'var(--primary)' : 'var(--bg-main)',
+                      color: filtroApenasFavoritos ? '#fff' : 'var(--text-main)',
+                      border: '1px solid var(--border-color)',
+                      padding: '8px 14px',
+                      borderRadius: '8px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      fontWeight: 'bold',
+                      fontSize: '0.85rem'
+                    }}
+                  >
+                    <Icons.Star filled={filtroApenasFavoritos} />
+                    {filtroApenasFavoritos ? 'Mostrando Favoritos' : 'Favoritos ⭐'}
+                  </button>
+                </div>
+              </div>
+
+              {/* BUSCA PADRONIZADA IGUAL À SUPERIOR (CAMPO + BOTÃO 100% LARGURA) */}
+              <form onSubmit={handleZonaSearchSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px', width: '100%' }}>
+                <div style={{ position: 'relative', width: '100%' }}>
+                  <div className="route-input-field" style={{ width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 16px' }}>
+                    <Icons.Search />
+                    <input
+                      type="text"
+                      style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text-main)', fontSize: '0.95rem', outline: 'none' }}
+                      placeholder="Pesquisar qualquer rua, travessa, bairro ou ponto (Ex: Rua do Hospício, Boa Viagem, Av. Paulista)..."
+                      value={filtroTextoZona}
+                      onChange={(e) => {
+                        setFiltroTextoZona(e.target.value);
+                        if (!e.target.value) setCustomSearchPoint(null);
+                      }}
+                    />
+                    {filtroTextoZona && (
+                      <button 
+                        type="button" 
+                        onClick={() => { setFiltroTextoZona(''); setCustomSearchPoint(null); }} 
+                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+                      >
+                        <Icons.Close />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <button 
+                  type="submit" 
+                  className="btn-primary" 
+                  style={{ width: '100%', padding: '14px', borderRadius: '10px', fontWeight: 'bold', fontSize: '0.95rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
+                  disabled={loadingCustomSearch}
+                >
+                  <Icons.Search /> {loadingCustomSearch ? 'Pesquisando Local...' : 'Consultar Alagamento do Ponto'}
+                </button>
+              </form>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {zonasExibidas.length === 0 ? (
+                  <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>Clique em "Consultar Alagamento do Ponto" para verificar o status desta rua.</p>
+                ) : (
+                  zonasExibidas.map(z => {
+                    const nivelCalculado = z.laminaEstimada || (parseFloat(waterLevel) + (z.severidade * 0.3)).toFixed(2);
+                    const isCritico = nivelCalculado > 0.75;
+                    const isExpanded = expandedZoneId === z.id;
+                    const isFav = favoritos.includes(z.id);
+
+                    return (
+                      <div 
+                        key={z.id} 
+                        style={{
+                          background: z.id === 999 ? 'rgba(56, 189, 248, 0.08)' : 'var(--bg-main)',
+                          borderRadius: '12px',
+                          border: isExpanded ? '1px solid var(--primary)' : '1px solid var(--border-color)',
+                          overflow: 'hidden',
+                          transition: 'all 0.25s ease-in-out',
+                          boxShadow: isExpanded ? '0 4px 12px rgba(0,0,0,0.3)' : 'none'
+                        }}
+                      >
+                        {/* HEADER DO CARD INTERATIVO */}
+                        <div 
+                          onClick={() => setExpandedZoneId(isExpanded ? null : z.id)}
+                          style={{
+                            display: 'flex',
+                            justify: 'space-between',
+                            alignItems: 'center',
+                            padding: '14px 18px',
+                            cursor: 'pointer',
+                            userSelect: 'none'
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <button
+                              type="button"
+                              onClick={(e) => toggleFavorito(z.id, e)}
+                              style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center' }}
+                              title={isFav ? "Remover dos Favoritos" : "Adicionar aos Favoritos"}
+                            >
+                              <Icons.Star filled={isFav} />
+                            </button>
+                            <div>
+                              <strong>{z.nome}</strong>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Acúmulo Estimado: {nivelCalculado}m</div>
+                            </div>
+                          </div>
+                          
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: 'bold', background: isCritico ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)', color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
+                              {isCritico ? 'Risco Alto' : 'Atenção'}
+                            </span>
+                            {isExpanded ? <Icons.ChevronUp /> : <Icons.ChevronDown />}
+                          </div>
+                        </div>
+
+                        {/* GAVETA DE INFORMAÇÕES EXPANDÍVEL */}
+                        {isExpanded && (
+                          <div style={{
+                            padding: '16px 18px',
+                            borderTop: '1px solid var(--border-color)',
+                            background: 'var(--bg-card)',
+                            fontSize: '0.85rem',
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                            gap: '12px',
+                            animation: 'fadeIn 0.2s ease-in-out'
+                          }}>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Via / Endereço Consultado:</span>
+                              <strong>{z.via}</strong>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Capacidade de Drenagem:</span>
+                              <strong>{z.drenagem}</strong>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Raio de Monitoramento:</span>
+                              <strong>{(z.raioKm * 1000).toFixed(0)} metros</strong>
+                            </div>
+                            <div>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Recomendação ao Condutor:</span>
+                              <strong style={{ color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
+                                {isCritico ? 'Evite trafegar nesta via. Risco de calço hidráulico!' : 'Reduza a velocidade e mantenha marcha constante.'}
+                              </strong>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: 'bold', background: isCritico ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)', color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
-                        {isCritico ? 'Risco Alto' : 'Atenção'}
-                      </span>
-                    </div>
-                  );
-                })}
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
         )}
 
-        {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS MÚLTIPLAS */}
+        {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS */}
         {activeTab === 'mapa' && (
           <div className="fade-in fullscreen-tab">
             <div className="route-floating-panel">
@@ -805,7 +1053,6 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                 {origemCoords && <Marker position={origemCoords}><Popup>Sua Posição Atual: {origemQuery}</Popup></Marker>}
                 {destinoCoords && <Marker position={destinoCoords}><Popup>Destino: {destinoQuery}</Popup></Marker>}
 
-                {/* MÚLTIPLAS MANCHAS ORGÂNICAS ESPALHADAS NO MAPA */}
                 {zones.map(z => {
                   const valorCalculado = parseFloat(waterLevel) + (z.severidade * 0.3);
                   const isCritico = valorCalculado > 0.75;
@@ -994,7 +1241,6 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [theme, setTheme] = useState(() => localStorage.getItem('floody_theme') || 'dark');
 
-  // ATUALIZAÇÃO DO TÍTULO DA ABA DO NAVEGADOR PARA "FLOODY"
   useEffect(() => {
     document.title = "Floody - Sistema Global de Monitoramento e Navegação";
   }, []);
