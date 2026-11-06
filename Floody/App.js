@@ -1,15 +1,34 @@
-import React, { useState, useEffect } from 'react';
-import { MapContainer, TileLayer, Polygon, Popup, LayersControl, Polyline, Marker, useMap } from 'react-leaflet';
+import React, { useState, useEffect, useRef } from 'react';
+import { MapContainer, TileLayer, Popup, LayersControl, Polyline, Marker, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
+import { env } from './src/config/env';
+import { createReport, listReports, subscribeToReports, updateReportStatus } from './src/features/reports/services/reportService';
+import ReportFormScreen from './src/features/reports/screens/ReportFormScreen';
+import ModerationScreen from './src/features/reports/screens/ModerationScreen';
+import { createVehicle, listFavoriteReportIds, listVehicles, setFavoriteReport } from './src/features/profile/services/userDataService';
+import { getCurrentPrecipitation } from './src/features/dashboard/services/weatherService';
+import { resolveAddress, searchAddresses } from './src/features/map/services/geocodingService';
+import { getDrivingRoute } from './src/features/map/services/routingService';
+import { listVehicleMakes, listVehicleModels } from './src/features/profile/services/vehicleCatalogService';
+import { buildUrl } from './src/services/api/externalClient';
+import { useDebouncedValue } from './src/hooks/useDebouncedValue';
+import { useLocation } from './src/hooks/useLocation';
+import { useNetwork } from './src/hooks/useNetwork';
+import { storage } from './src/services/storage/storage';
+import { AuthProvider, useAuth } from './src/store/AuthContext';
+import AuthNavigator from './src/navigation/AuthNavigator';
+import AppNavigator from './src/navigation/AppNavigator';
+import InlineAlert from './src/components/feedback/InlineAlert';
+import { formatDateTime } from './src/utils/formatters';
 
 // Correção dos ícones padrão do Leaflet
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+  iconRetinaUrl: env.mapMarkerIconRetina,
+  iconUrl: env.mapMarkerIcon,
+  shadowUrl: env.mapMarkerShadow,
 });
 
 // Ícones Vetoriais (SVG)
@@ -118,23 +137,6 @@ const Icons = {
   )
 };
 
-// Gerador de Mancha Orgânica Assimétrica
-function gerarManchaOrganicaDiferenciada([centerLat, centerLng], raioKm, seed = 1, fatorEscala = 1) {
-  const pontos = [];
-  const numPontos = 16;
-  const raioGraus = (raioKm * fatorEscala) / 111;
-
-  for (let i = 0; i < numPontos; i++) {
-    const angulo = (i / numPontos) * (2 * Math.PI);
-    const variacao = 0.65 + 0.3 * Math.sin(seed * angulo * 2) + 0.25 * Math.cos((seed + i) * 1.5) + 0.1 * Math.sin(i * 3);
-    const r = raioGraus * variacao;
-    const lat = centerLat + r * Math.sin(angulo);
-    const lng = centerLng + (r * Math.cos(angulo)) / Math.cos((centerLat * Math.PI) / 180);
-    pontos.push([lat, lng]);
-  }
-  return pontos;
-}
-
 // Ajustador de câmera do mapa
 function RouteBoundsAdjuster({ coords, centerCoords }) {
   const map = useMap();
@@ -148,134 +150,36 @@ function RouteBoundsAdjuster({ coords, centerCoords }) {
   return null;
 }
 
-// Tela de Login / Registro
-function AuthScreen({ onLogin, theme, onToggleTheme }) {
-  const [isLogin, setIsLogin] = useState(true);
-  const [formData, setFormData] = useState({ nome: '', email: '', senha: '' });
-  const [erro, setErro] = useState('');
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    setErro('');
-    const savedUsers = JSON.parse(localStorage.getItem('floody_users')) || [
-      { nome: 'Admin Floody', email: 'admin@floody.com', senha: '123', tipo: 'admin' }
-    ];
-
-    if (isLogin) {
-      const user = savedUsers.find(
-        (u) => u.email.trim().toLowerCase() === formData.email.trim().toLowerCase() && u.senha === formData.senha
-      );
-      if (user) {
-        localStorage.setItem('floody_active_session', JSON.stringify(user));
-        onLogin(user);
-      } else {
-        setErro('E-mail ou senha incorretos.');
-      }
-    } else {
-      if (!formData.nome || !formData.email || !formData.senha) {
-        setErro('Preencha todos os campos.');
-        return;
-      }
-      const userExists = savedUsers.some(
-        (u) => u.email.trim().toLowerCase() === formData.email.trim().toLowerCase()
-      );
-      if (userExists) {
-        setErro('E-mail já cadastrado.');
-        return;
-      }
-      const newUser = { id: Date.now(), nome: formData.nome, email: formData.email, senha: formData.senha, tipo: 'usuario' };
-      savedUsers.push(newUser);
-      localStorage.setItem('floody_users', JSON.stringify(savedUsers));
-      localStorage.setItem('floody_active_session', JSON.stringify(newUser));
-      onLogin(newUser);
-    }
-  };
-
-  return (
-    <div className="auth-wrapper">
-      <button className="theme-toggle-floating" onClick={onToggleTheme}>
-        {theme === 'dark' ? <><Icons.Sun /> Modo Claro</> : <><Icons.Moon /> Modo Escuro</>}
-      </button>
-      <div className="auth-card">
-        <div className="auth-logo"><div className="logo-mark"></div><h2>Floody</h2></div>
-        <p className="auth-subtitle">
-          {isLogin ? 'Faça login para acessar o sistema' : 'Crie sua conta no Floody'}
-        </p>
-        {erro && <div className="auth-erro">{erro}</div>}
-        <form onSubmit={handleSubmit} className="auth-form">
-          {!isLogin && (
-            <div className="input-group">
-              <label>Nome Completo</label>
-              <input
-                type="text"
-                required
-                placeholder="Seu nome"
-                value={formData.nome}
-                onChange={(e) => setFormData({ ...formData, nome: e.target.value })}
-              />
-            </div>
-          )}
-          <div className="input-group">
-            <label>E-mail</label>
-            <input
-              type="email"
-              required
-              placeholder="seuemail@email.com"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-            />
-          </div>
-          <div className="input-group">
-            <label>Senha</label>
-            <input
-              type="password"
-              required
-              placeholder="........"
-              value={formData.senha}
-              onChange={(e) => setFormData({ ...formData, senha: e.target.value })}
-            />
-          </div>
-          <button type="submit" className="btn-primary auth-btn">
-            {isLogin ? 'Entrar no Sistema' : 'Cadastrar e Entrar'}
-          </button>
-        </form>
-        <div className="auth-switch">
-          <button type="button" onClick={() => { setIsLogin(!isLogin); setErro(''); }}>
-            {isLogin ? 'Não tem uma conta? Cadastre-se' : 'Já possui conta? Fazer Login'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // Componente Principal do App
 function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [activeTab, setActiveTab] = useState(user.tipo === 'admin' ? 'admin_reportes' : 'dashboard');
   const [veiculos, setVeiculos] = useState([]);
   const [reportes, setReportes] = useState([]);
-  const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: 'Av. Agamenon Magalhães, Recife' });
+  const [reportLoading, setReportLoading] = useState(true);
+  const [reportError, setReportError] = useState('');
+  const [selectedReport, setSelectedReport] = useState(null);
+  const [reportCoords, setReportCoords] = useState(null);
+  const [loadingReportGPS, setLoadingReportGPS] = useState(false);
+  const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
   
   // Meteorologia Real e Monitoramento Global
-  const [realRain, setRealRain] = useState(0);
-  const [waterLevel, setWaterLevel] = useState(0.4);
+  const [realRain, setRealRain] = useState(null);
   const [loadingApi, setLoadingApi] = useState(true);
+  const [weatherError, setWeatherError] = useState('');
   const [cidadeAtualNome, setCidadeAtualNome] = useState('Sua Localização');
   const [currentCoords, setCurrentCoords] = useState([-8.05428, -34.8813]);
   
   const [buscaCentralQuery, setBuscaCentralQuery] = useState('');
   const [buscaCentralSuggestions, setBuscaCentralSuggestions] = useState([]);
+  const debouncedCentralQuery = useDebouncedValue(buscaCentralQuery, 700);
+  const selectedCentralAddressRef = useRef('');
 
   // Estados de Interação e Pesquisa Dinâmica de Qualquer Rua/Região
   const [expandedZoneId, setExpandedZoneId] = useState(null);
   const [filtroApenasFavoritos, setFiltroApenasFavoritos] = useState(false);
   const [filtroTextoZona, setFiltroTextoZona] = useState('');
-  const [customSearchPoint, setCustomSearchPoint] = useState(null);
-  const [loadingCustomSearch, setLoadingCustomSearch] = useState(false);
   
-  const [favoritos, setFavoritos] = useState(() => {
-    return JSON.parse(localStorage.getItem('floody_favoritos')) || [1, 2];
-  });
+  const [favoritos, setFavoritos] = useState([]);
   
   // Mapa de Calor Toggle
   const [showHeatmap, setShowHeatmap] = useState(true);
@@ -284,10 +188,12 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [origemQuery, setOrigemQuery] = useState('Recife, PE');
   const [origemCoords, setOrigemCoords] = useState([-8.05428, -34.8813]);
   const [origemSuggestions, setOrigemSuggestions] = useState([]);
+  const debouncedOrigemQuery = useDebouncedValue(origemQuery, 700);
   
   const [destinoQuery, setDestinoQuery] = useState('');
   const [destinoCoords, setDestinoCoords] = useState(null);
   const [destinoSuggestions, setDestinoSuggestions] = useState([]);
+  const debouncedDestinoQuery = useDebouncedValue(destinoQuery, 700);
   
   const [routeCoords, setRouteCoords] = useState([]);
   const [routeInfo, setRouteInfo] = useState(null);
@@ -304,227 +210,221 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [alturaCarro, setAlturaCarro] = useState('');
 
   const defaultCenter = [-8.05428, -34.8813];
-  
-  // Base de Pontos Críticos Padrão da Região
-  const [zones] = useState([
-    { id: 1, nome: "Av. Agamenon Magalhães (Recife)", coords: [-8.0470, -34.8770], raioKm: 0.85, severidade: 0.9, seed: 2.1, via: "Corredor Norte/Sul", drenagem: "Baixa", isLocal: true },
-    { id: 2, nome: "Largo da Paz / Afogados (Recife)", coords: [-8.0775, -34.9030], raioKm: 0.65, severidade: 0.85, seed: 3.4, via: "Estrada dos Remédios", drenagem: "Crítica", isLocal: true },
-    { id: 3, nome: "Av. Recife / Areias (Recife)", coords: [-8.0820, -34.9250], raioKm: 0.95, severidade: 0.95, seed: 1.8, via: "Eixo Zona Sul-Oeste", drenagem: "Crítica", isLocal: true },
-    { id: 4, nome: "Av. Mascarenhas de Moraes (Imbiribeira)", coords: [-8.1050, -34.9120], raioKm: 0.75, severidade: 0.88, seed: 4.5, via: "Acesso Aeroporto", drenagem: "Média", isLocal: true },
-    { id: 5, nome: "Pan Nordestina (Olinda)", coords: [-8.0120, -34.8620], raioKm: 0.70, severidade: 0.75, seed: 5.2, via: "Av. Olinda", drenagem: "Baixa", isLocal: true },
-    { id: 6, nome: "Av. Beira Mar (Jaboatão dos Guararapes)", coords: [-8.1820, -34.9180], raioKm: 0.80, severidade: 0.82, seed: 7.1, via: "Orla Piedade", drenagem: "Média", isLocal: true },
-    { id: 7, nome: "Av. Paulista (São Paulo)", coords: [-23.5615, -46.6565], raioKm: 1.10, severidade: 0.85, seed: 6.3, via: "Centro Expandido", drenagem: "Boa", isLocal: false }
-  ]);
+  const { getCurrentLocation, watchLocation } = useLocation();
+  const isOnline = useNetwork();
 
-  const fetchWeatherForCoords = (lat, lng, nomeLocal) => {
+  useEffect(() => {
+    if (user.tipo === 'admin' && activeTab !== 'admin_reportes') setActiveTab('admin_reportes');
+    if (user.tipo !== 'admin' && activeTab === 'admin_reportes') setActiveTab('dashboard');
+  }, [activeTab, user.tipo]);
+  
+  const weatherLocationRef = useRef({ coords: [-8.05428, -34.8813], name: 'Recife, PE' });
+  const weatherRequestRef = useRef(0);
+
+  const fetchWeatherForCoords = async (lat, lng, nomeLocal) => {
+    const requestId = ++weatherRequestRef.current;
+    const locationName = nomeLocal || weatherLocationRef.current.name;
+    weatherLocationRef.current = { coords: [lat, lng], name: locationName };
     setLoadingApi(true);
-    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=precipitation,rain,showers`)
-      .then(res => res.json())
-      .then(data => {
-        if (data && data.current) {
-          const currentPrecip = data.current.precipitation || data.current.rain || 0;
-          setRealRain(currentPrecip);
-          setWaterLevel((0.2 + (currentPrecip * 0.15)).toFixed(2));
-        }
-        if (nomeLocal) setCidadeAtualNome(nomeLocal);
-        setCurrentCoords([lat, lng]);
-        setLoadingApi(false);
-      })
-      .catch(() => setLoadingApi(false));
+    setWeatherError('');
+    setCidadeAtualNome(locationName);
+    try {
+      const precipitation = await getCurrentPrecipitation(lat, lng);
+      if (requestId !== weatherRequestRef.current) return;
+      setRealRain(precipitation);
+    } catch (error) {
+      if (requestId === weatherRequestRef.current) {
+        setWeatherError(error instanceof Error ? error.message : 'Meteorologia indisponível.');
+      }
+    } finally {
+      if (requestId === weatherRequestRef.current) setLoadingApi(false);
+    }
   };
 
   useEffect(() => {
-    const initLocation = () => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const lat = pos.coords.latitude;
-            const lng = pos.coords.longitude;
-            setOrigemCoords([lat, lng]);
-            fetchWeatherForCoords(lat, lng, 'Sua Posição Atual');
-          },
-          () => {
-            fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
-          },
-          { timeout: 5000 }
-        );
-      } else {
-        fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
-      }
-    };
-
-    initLocation();
+    let active = true;
+    getCurrentLocation()
+      .then((coords) => {
+        if (!active) return;
+        setOrigemCoords(coords);
+        fetchWeatherForCoords(coords[0], coords[1], 'Sua Posição Atual');
+      })
+      .catch(() => {
+        if (active) fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE (Padrão)');
+      });
 
     const liveTimer = setInterval(() => {
-      if (currentCoords) {
-        fetchWeatherForCoords(currentCoords[0], currentCoords[1], cidadeAtualNome);
-      }
+      const { coords, name } = weatherLocationRef.current;
+      fetchWeatherForCoords(coords[0], coords[1], name);
     }, 60000);
 
-    return () => clearInterval(liveTimer);
+    return () => {
+      active = false;
+      clearInterval(liveTimer);
+    };
   }, []);
-
-  // BUSCA UNIVERSAL PADRONIZADA COM DESIGN EM DUAS LINHAS
-  const handleZonaSearchSubmit = async (e) => {
-    e.preventDefault();
-    if (!filtroTextoZona || filtroTextoZona.trim().length < 2) return;
-    setLoadingCustomSearch(true);
-    try {
-      const termo = encodeURIComponent(filtroTextoZona.trim());
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termo}&limit=1`);
-      const data = await res.json();
-      if (data && data.length > 0) {
-        const lat = parseFloat(data[0].lat);
-        const lon = parseFloat(data[0].lon);
-        
-        const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=precipitation,rain`);
-        const weatherData = await weatherRes.json();
-        const chuvaLocal = weatherData?.current?.precipitation || weatherData?.current?.rain || 0;
-        const laminaEstimada = (0.15 + (chuvaLocal * 0.18)).toFixed(2);
-
-        setCustomSearchPoint({
-          id: 999,
-          nome: data[0].display_name,
-          coords: [lat, lon],
-          raioKm: 0.5,
-          severidade: chuvaLocal > 2.0 ? 0.9 : 0.4,
-          via: data[0].name || filtroTextoZona,
-          drenagem: chuvaLocal > 3.0 ? "Crítica" : "Normal",
-          laminaEstimada: laminaEstimada,
-          chuvaLocal: chuvaLocal
-        });
-        setExpandedZoneId(999);
-      } else {
-        setCustomSearchPoint(null);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoadingCustomSearch(false);
-    }
-  };
 
   const toggleFavorito = (id, e) => {
     e.stopPropagation();
-    let novosFavoritos;
-    if (favoritos.includes(id)) {
-      novosFavoritos = favoritos.filter(fId => fId !== id);
-    } else {
-      novosFavoritos = [...favoritos, id];
-    }
-    setFavoritos(novosFavoritos);
-    localStorage.setItem('floody_favoritos', JSON.stringify(novosFavoritos));
+    const alreadyFavorite = favoritos.includes(id);
+    setFavoriteReport(id, !alreadyFavorite)
+      .then(() => setFavoritos((current) => alreadyFavorite
+        ? current.filter((favoriteId) => favoriteId !== id)
+        : [...current, id]))
+      .catch((error) => setReportError(error.message));
   };
 
   const handleCentralSearch = async (e) => {
     e.preventDefault();
     if (!buscaCentralQuery || buscaCentralQuery.trim().length < 2) return;
     try {
-      const termo = encodeURIComponent(buscaCentralQuery.trim());
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termo}&limit=1`);
-      const data = await res.json();
-      if (data && data.length > 0) {
-        const lat = parseFloat(data[0].lat);
-        const lon = parseFloat(data[0].lon);
-        fetchWeatherForCoords(lat, lon, data[0].display_name);
+      const coords = await geocodeEnderecoDireto(buscaCentralQuery.trim());
+      if (coords) {
+        fetchWeatherForCoords(coords[0], coords[1], buscaCentralQuery.trim());
         setBuscaCentralSuggestions([]);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (error) {
+      setWeatherError(error instanceof Error ? error.message : 'Busca de endereço indisponível.');
     }
   };
 
   const handleCentralInputChange = (texto) => {
+    selectedCentralAddressRef.current = '';
     setBuscaCentralQuery(texto);
-    if (texto.length >= 3) {
-      searchAddress(texto, setBuscaCentralSuggestions);
-    } else {
-      setBuscaCentralSuggestions([]);
-    }
+    if (texto.length < 3) setBuscaCentralSuggestions([]);
   };
 
   useEffect(() => {
-    let watchId = null;
-    if (isNavigating && navigator.geolocation) {
-      watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          const coords = [pos.coords.latitude, pos.coords.longitude];
-          setOrigemCoords(coords);
-        },
-        (err) => console.error(err),
-        { enableHighAccuracy: true, maximumAge: 3000, timeout: 10000 }
-      );
+    let active = true;
+    let subscription = null;
+    if (isNavigating) {
+      watchLocation(setOrigemCoords)
+        .then((nextSubscription) => {
+          if (active) subscription = nextSubscription;
+          else nextSubscription.remove();
+        })
+        .catch((error) => setReportError(error.message));
     }
     return () => {
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      active = false;
+      subscription?.remove();
     };
   }, [isNavigating]);
 
   useEffect(() => {
-    setVeiculos(JSON.parse(localStorage.getItem('floody_veiculos')) || []);
-    setReportes(JSON.parse(localStorage.getItem('floody_reportes')) || []);
-    fetch('https://parallelum.com.br/fipe/api/v1/carros/marcas')
-      .then(res => res.json())
+    let active = true;
+    const loadReports = async () => {
+      try {
+        const data = await listReports();
+        if (active) setReportes(data);
+      } catch (error) {
+        if (active) setReportError(error.message);
+      } finally {
+        if (active) setReportLoading(false);
+      }
+    };
+
+    loadReports();
+    const unsubscribe = subscribeToReports(loadReports);
+    listVehicles()
+      .then((data) => {
+        if (active) setVeiculos(data.map((vehicle) => ({
+          id: vehicle.id,
+          marca: vehicle.make,
+          modelo: vehicle.model,
+          altura: vehicle.ground_clearance_cm,
+          userId: user.id,
+        })));
+      })
+      .catch((error) => { if (active) setReportError(error.message); });
+    listFavoriteReportIds()
+      .then((ids) => { if (active) setFavoritos(ids); })
+      .catch((error) => { if (active) setReportError(error.message); });
+    listVehicleMakes()
       .then(data => setMarcas(data))
-      .catch(err => console.error(err));
-  }, []);
+      .catch(err => { if (active) setReportError(err.message); });
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [user.id]);
 
   useEffect(() => {
     if (marcaSelecionada.codigo) {
-      fetch(`https://parallelum.com.br/fipe/api/v1/carros/marcas/${marcaSelecionada.codigo}/modelos`)
-        .then(res => res.json())
-        .then(data => setModelos(data.modelos || []))
-        .catch(err => console.error(err));
+      listVehicleModels(marcaSelecionada.codigo)
+        .then(setModelos)
+        .catch(err => setReportError(err.message));
     } else {
       setModelos([]);
     }
   }, [marcaSelecionada]);
 
-  const searchAddress = async (query, setSuggestions) => {
+  const searchAddress = async (query, setSuggestions, signal) => {
     if (!query || query.length < 3) {
       setSuggestions([]);
       return;
     }
     try {
-      const termoBusca = encodeURIComponent(query);
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termoBusca}&limit=6&addressdetails=1`);
-      const data = await res.json();
-      setSuggestions(data || []);
-    } catch (e) {
-      setSuggestions([]);
+      const data = await searchAddresses(query, signal);
+      if (!signal?.aborted) setSuggestions(data || []);
+    } catch (error) {
+      if (error.name !== 'AbortError') {
+        setSuggestions([]);
+        setReportError(error.message);
+      }
     }
   };
 
+  useEffect(() => {
+    if (debouncedCentralQuery === selectedCentralAddressRef.current) {
+      setBuscaCentralSuggestions([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    searchAddress(debouncedCentralQuery, setBuscaCentralSuggestions, controller.signal);
+    return () => controller.abort();
+  }, [debouncedCentralQuery]);
+
+  useEffect(() => {
+    if (origemCoords) {
+      setOrigemSuggestions([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    searchAddress(debouncedOrigemQuery, setOrigemSuggestions, controller.signal);
+    return () => controller.abort();
+  }, [debouncedOrigemQuery, origemCoords]);
+
+  useEffect(() => {
+    if (destinoCoords) {
+      setDestinoSuggestions([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    searchAddress(debouncedDestinoQuery, setDestinoSuggestions, controller.signal);
+    return () => controller.abort();
+  }, [debouncedDestinoQuery, destinoCoords]);
+
   const geocodeEnderecoDireto = async (enderecoTexto) => {
     try {
-      const termo = encodeURIComponent(enderecoTexto);
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${termo}&limit=1`);
-      const data = await res.json();
-      if (data && data.length > 0) {
-        return [parseFloat(data[0].lat), parseFloat(data[0].lon)];
-      }
-    } catch (e) {
-      console.error(e);
+      return await resolveAddress(enderecoTexto);
+    } catch (error) {
+      setReportError(error.message);
     }
     return null;
   };
 
   const handleUseGPS = () => {
-    if (!navigator.geolocation) return;
     setLoadingGPS(true);
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const coords = [pos.coords.latitude, pos.coords.longitude];
+    getCurrentLocation()
+      .then((coords) => {
         setOrigemCoords(coords);
         setOrigemQuery('Minha Localização Atual');
         setOrigemSuggestions([]);
-        setLoadingGPS(false);
-      },
-      () => {
-        setLoadingGPS(false);
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
+      })
+      .catch((error) => setReportError(error.message))
+      .finally(() => setLoadingGPS(false));
   };
 
   const handleBuscarRota = async (e) => {
@@ -545,48 +445,30 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     }
 
     if (!pOrigem || !pDestino) {
+      setReportError('Informe uma origem e um destino válidos para calcular a rota.');
       setLoadingRoute(false);
       return;
     }
 
     try {
-      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${pOrigem[1]},${pOrigem[0]};${pDestino[1]},${pDestino[0]}?overview=full&geometries=geojson`;
-      const res = await fetch(osrmUrl);
-      const data = await res.json();
-
-      if (data.routes && data.routes.length > 0) {
-        const route = data.routes[0];
-        const leafCoords = route.geometry.coordinates.map(c => [c[1], c[0]]);
-        setRouteCoords(leafCoords);
-        const distKm = (route.distance / 1000).toFixed(1);
-        const duracaoMin = Math.round(route.duration / 60);
-
-        const weatherRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${pDestino[0]}&longitude=${pDestino[1]}&current=precipitation,rain`);
-        const weatherData = await weatherRes.json();
-        const chuvaDestino = weatherData?.current?.precipitation || weatherData?.current?.rain || 0;
-
-        let statusRisco = 'BAIXO (Estrada Lenta)';
-        let bgRisco = 'var(--success)';
-        if (chuvaDestino > 4.0 || realRain > 5.0) {
-          statusRisco = 'ALTO (Risco de Alagamento na Pista)';
-          bgRisco = 'var(--danger)';
-        } else if (chuvaDestino > 1.0 || realRain > 1.0) {
-          statusRisco = 'MÉDIO (Atenção em Pontos Baixos)';
-          bgRisco = 'var(--warning)';
-        }
-        setRouteInfo({
-          distancia: `${distKm} km`,
-          duracao: `${duracaoMin} min`,
-          chuvaDestino: `${chuvaDestino} mm/h`,
-          statusRisco,
-          bgRisco,
-          origem: origemQuery,
-          destino: destinoQuery
-        });
-        setIsNavigating(true);
-      }
-    } catch (err) {
-      console.error(err);
+      const route = await getDrivingRoute(pOrigem, pDestino);
+      const leafCoords = route.geometry.coordinates.map(([longitude, latitude]) => [latitude, longitude]);
+      setRouteCoords(leafCoords);
+      const distKm = (route.distance / 1000).toFixed(1);
+      const duracaoMin = Math.round(route.duration / 60);
+      const chuvaDestino = await getCurrentPrecipitation(pDestino[0], pDestino[1]).catch(() => null);
+      setRouteInfo({
+        distancia: `${distKm} km`,
+        duracao: `${duracaoMin} min`,
+        chuvaDestino: chuvaDestino == null ? 'Sem dados' : `${chuvaDestino} mm`,
+        statusRisco: 'Consulte as ocorrências aprovadas no mapa',
+        bgRisco: 'var(--primary)',
+        origem: origemQuery,
+        destino: destinoQuery
+      });
+      setIsNavigating(true);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Serviço de rota temporariamente indisponível.');
     } finally {
       setLoadingRoute(false);
     }
@@ -603,40 +485,81 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const handleSaveVeiculo = (e) => {
     e.preventDefault();
     if (!marcaSelecionada.nome || !modeloSelecionado || !alturaCarro) return;
-    const novaLista = [...veiculos, { marca: marcaSelecionada.nome, modelo: modeloSelecionado, altura: alturaCarro, id: Date.now(), userId: user.email }];
-    setVeiculos(novaLista);
-    localStorage.setItem('floody_veiculos', JSON.stringify(novaLista));
-    setMarcaSelecionada({ codigo: '', nome: '' });
-    setModeloSelecionado('');
-    setAlturaCarro('');
+    createVehicle({ make: marcaSelecionada.nome, model: modeloSelecionado, ground_clearance_cm: Number(alturaCarro) })
+      .then(() => listVehicles())
+      .then((data) => setVeiculos(data.map((vehicle) => ({
+        id: vehicle.id,
+        marca: vehicle.make,
+        modelo: vehicle.model,
+        altura: vehicle.ground_clearance_cm,
+        userId: user.id,
+      }))))
+      .then(() => {
+        setMarcaSelecionada({ codigo: '', nome: '' });
+        setModeloSelecionado('');
+        setAlturaCarro('');
+      })
+      .catch((error) => setReportError(error.message));
   };
 
-  const handleSaveReporte = (e) => {
+  const handleSaveReporte = async (e) => {
     e.preventDefault();
-    const novaLista = [...reportes, { ...formReporte, id: Date.now(), autor: user.nome, status: 'Pendente', data: new Date().toLocaleDateString('pt-BR') }];
-    setReportes(novaLista);
-    localStorage.setItem('floody_reportes', JSON.stringify(novaLista));
-    setFormReporte({ tipo: 'Alagamento Intransitável', descricao: '', local: 'Av. Agamenon Magalhães, Recife' });
-    setActiveTab('sucesso_reporte');
+    setReportError('');
+    if (!reportCoords) {
+      setReportError('Obtenha sua localização por GPS antes de enviar o relato.');
+      return;
+    }
+    try {
+      await createReport({
+        latitude: reportCoords[0],
+        longitude: reportCoords[1],
+        hazard_type: formReporte.tipo,
+        description: formReporte.descricao.trim(),
+        location_label: formReporte.local.trim(),
+      });
+      setReportCoords(null);
+      setFormReporte({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
+      setActiveTab('sucesso_reporte');
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Não foi possível enviar a ocorrência.');
+    }
+  };
+
+  const handleReportStatus = async (reportId, status) => {
+    setReportError('');
+    try {
+      await updateReportStatus(reportId, status);
+      const updatedReports = await listReports();
+      setReportes(updatedReports);
+      setSelectedReport((current) => current?.id === reportId
+        ? updatedReports.find((report) => report.id === reportId) ?? current
+        : current);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Não foi possível atualizar a ocorrência.');
+    }
+  };
+
+  const handleReportGPS = () => {
+    setLoadingReportGPS(true);
+    getCurrentLocation()
+      .then((coords) => {
+        setReportCoords(coords);
+        setFormReporte((current) => ({ ...current, local: 'Minha localização atual' }));
+        setReportError('');
+      })
+      .catch((error) => setReportError(error.message))
+      .finally(() => setLoadingReportGPS(false));
   };
 
   const mapTileUrl = theme === 'dark'
-    ? "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-    : "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+    ? env.mapTilesDark
+    : env.mapTilesLight;
 
-  const termoPesquisado = filtroTextoZona.trim().toLowerCase();
-  
-  let zonasExibidas = zones.filter(z => {
-    const matchFavorito = !filtroApenasFavoritos || favoritos.includes(z.id);
-    if (termoPesquisado.length > 0) {
-      return matchFavorito && (z.nome.toLowerCase().includes(termoPesquisado) || (z.via && z.via.toLowerCase().includes(termoPesquisado)));
-    }
-    return matchFavorito && z.isLocal;
-  });
-
-  if (customSearchPoint) {
-    zonasExibidas = [customSearchPoint, ...zonasExibidas];
-  }
+  const termoPesquisado = filtroTextoZona.trim().toLocaleLowerCase();
+  const reportesExibidos = reportes
+    .filter((report) => report.status === 'Aprovado')
+    .filter((report) => !filtroApenasFavoritos || favoritos.includes(report.id))
+    .filter((report) => !termoPesquisado || `${report.location_label} ${report.hazard_type} ${report.description}`.toLocaleLowerCase().includes(termoPesquisado));
 
   return (
     <div className="floody-pro-layout">
@@ -691,6 +614,8 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
       {/* WORKSPACE PRINCIPAL */}
       <main className="pro-workspace">
+        {!isOnline && <InlineAlert>Sem conexão. Dados podem estar desatualizados.</InlineAlert>}
+        {reportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
           <div className="fade-in scrollable-tab">
             <header className="content-title-header">
@@ -719,6 +644,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                         className="suggestion-item"
                         style={{ padding: '10px 14px', cursor: 'pointer', borderBottom: '1px solid var(--border-color)' }}
                         onClick={() => {
+                          selectedCentralAddressRef.current = s.display_name;
                           setBuscaCentralQuery(s.display_name);
                           fetchWeatherForCoords(parseFloat(s.lat), parseFloat(s.lon), s.display_name);
                           setBuscaCentralSuggestions([]);
@@ -741,21 +667,22 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
             <div className="live-stats-grid">
               <div className="stat-card">
-                <div className="stat-header"><span>Precipitação Real (Open-Meteo)</span><span className="live-tag">AO VIVO</span></div>
-                <h2>{loadingApi ? 'Carregando...' : `${realRain} mm/h`}</h2>
+                <div className="stat-header"><span>Precipitação atual (Open-Meteo)</span><span className="live-tag">AO VIVO</span></div>
+                <h2>{loadingApi ? 'Carregando...' : realRain == null ? 'Sem dados' : `${realRain} mm`}</h2>
                 <div className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cidadeAtualNome}</div>
               </div>
               <div className="stat-card">
-                <div className="stat-header"><span>Lâmina d'Água Estimada</span><span className="live-tag blue">ONLINE (A CADA 60S)</span></div>
-                <h2>{loadingApi ? 'Carregando...' : `${waterLevel} m`}</h2>
-                <div className="stat-footer">Nível estimado em corredores viários</div>
+                <div className="stat-header"><span>Ocorrências confirmadas</span><span className="live-tag blue">MODERADAS</span></div>
+                <h2>{reportes.filter((report) => report.status === 'Aprovado').length}</h2>
+                <div className="stat-footer">Alertas aprovados pela equipe de moderação</div>
               </div>
             </div>
+            {weatherError && <p role="status" className="auth-erro">{weatherError}</p>}
 
             {/* SEÇÃO DE PONTOS CRÍTICOS COM DESIGN TOTALMENTE PADRONIZADO */}
             <div className="chart-card-box" style={{ marginTop: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
-                <h3>Status de Alagamento Pontos Críticos</h3>
+                <h3>Ocorrências aprovadas pela comunidade</h3>
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
                   <button
                     type="button"
@@ -781,7 +708,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
               </div>
 
               {/* BUSCA PADRONIZADA IGUAL À SUPERIOR (CAMPO + BOTÃO 100% LARGURA) */}
-              <form onSubmit={handleZonaSearchSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px', width: '100%' }}>
+              <form onSubmit={(event) => event.preventDefault()} style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '20px', width: '100%' }}>
                 <div style={{ position: 'relative', width: '100%' }}>
                   <div className="route-input-field" style={{ width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 16px' }}>
                     <Icons.Search />
@@ -792,13 +719,12 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                       value={filtroTextoZona}
                       onChange={(e) => {
                         setFiltroTextoZona(e.target.value);
-                        if (!e.target.value) setCustomSearchPoint(null);
                       }}
                     />
                     {filtroTextoZona && (
                       <button 
                         type="button" 
-                        onClick={() => { setFiltroTextoZona(''); setCustomSearchPoint(null); }} 
+                        onClick={() => setFiltroTextoZona('')} 
                         style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
                       >
                         <Icons.Close />
@@ -810,27 +736,24 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   type="submit" 
                   className="btn-primary" 
                   style={{ width: '100%', padding: '14px', borderRadius: '10px', fontWeight: 'bold', fontSize: '0.95rem', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px' }}
-                  disabled={loadingCustomSearch}
                 >
-                  <Icons.Search /> {loadingCustomSearch ? 'Pesquisando Local...' : 'Consultar Alagamento do Ponto'}
+                  <Icons.Search /> Filtrar ocorrências confirmadas
                 </button>
               </form>
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {zonasExibidas.length === 0 ? (
-                  <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>Clique em "Consultar Alagamento do Ponto" para verificar o status desta rua.</p>
+                {reportesExibidos.length === 0 ? (
+                  <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>{reportLoading ? 'Carregando ocorrências...' : 'Nenhuma ocorrência aprovada corresponde à busca.'}</p>
                 ) : (
-                  zonasExibidas.map(z => {
-                    const nivelCalculado = z.laminaEstimada || (parseFloat(waterLevel) + (z.severidade * 0.3)).toFixed(2);
-                    const isCritico = nivelCalculado > 0.75;
-                    const isExpanded = expandedZoneId === z.id;
-                    const isFav = favoritos.includes(z.id);
+                  reportesExibidos.map(report => {
+                    const isExpanded = expandedZoneId === report.id;
+                    const isFav = favoritos.includes(report.id);
 
                     return (
                       <div 
-                        key={z.id} 
+                        key={report.id} 
                         style={{
-                          background: z.id === 999 ? 'rgba(56, 189, 248, 0.08)' : 'var(--bg-main)',
+                          background: 'var(--bg-main)',
                           borderRadius: '12px',
                           border: isExpanded ? '1px solid var(--primary)' : '1px solid var(--border-color)',
                           overflow: 'hidden',
@@ -840,7 +763,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                       >
                         {/* HEADER DO CARD INTERATIVO */}
                         <div 
-                          onClick={() => setExpandedZoneId(isExpanded ? null : z.id)}
+                          onClick={() => setExpandedZoneId(isExpanded ? null : report.id)}
                           style={{
                             display: 'flex',
                             justify: 'space-between',
@@ -853,21 +776,21 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                             <button
                               type="button"
-                              onClick={(e) => toggleFavorito(z.id, e)}
+                              onClick={(e) => toggleFavorito(report.id, e)}
                               style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '2px', display: 'flex', alignItems: 'center' }}
                               title={isFav ? "Remover dos Favoritos" : "Adicionar aos Favoritos"}
                             >
                               <Icons.Star filled={isFav} />
                             </button>
                             <div>
-                              <strong>{z.nome}</strong>
-                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Acúmulo Estimado: {nivelCalculado}m</div>
+                              <strong>{report.location_label}</strong>
+                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{report.hazard_type} · {formatDateTime(report.occurred_at)}</div>
                             </div>
                           </div>
                           
                           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: 'bold', background: isCritico ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)', color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
-                              {isCritico ? 'Risco Alto' : 'Atenção'}
+                            <span style={{ padding: '4px 12px', borderRadius: '12px', fontSize: '0.8rem', fontWeight: 'bold', background: 'rgba(239, 68, 68, 0.2)', color: 'var(--danger)' }}>
+                              Confirmado
                             </span>
                             {isExpanded ? <Icons.ChevronUp /> : <Icons.ChevronDown />}
                           </div>
@@ -887,21 +810,19 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                           }}>
                             <div>
                               <span style={{ color: 'var(--text-muted)', display: 'block' }}>Via / Endereço Consultado:</span>
-                              <strong>{z.via}</strong>
+                              <strong>{report.location_label}</strong>
                             </div>
                             <div>
-                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Capacidade de Drenagem:</span>
-                              <strong>{z.drenagem}</strong>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Descrição do relato:</span>
+                              <strong>{report.description}</strong>
                             </div>
                             <div>
-                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Raio de Monitoramento:</span>
-                              <strong>{(z.raioKm * 1000).toFixed(0)} metros</strong>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Coordenadas:</span>
+                              <strong>{report.latitude}, {report.longitude}</strong>
                             </div>
                             <div>
-                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Recomendação ao Condutor:</span>
-                              <strong style={{ color: isCritico ? 'var(--danger)' : 'var(--warning)' }}>
-                                {isCritico ? 'Evite trafegar nesta via. Risco de calço hidráulico!' : 'Reduza a velocidade e mantenha marcha constante.'}
-                              </strong>
+                              <span style={{ color: 'var(--text-muted)', display: 'block' }}>Autor do relato:</span>
+                              <strong>{report.author_id}</strong>
                             </div>
                           </div>
                         )}
@@ -948,7 +869,6 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                       onChange={(e) => {
                         setOrigemQuery(e.target.value);
                         setOrigemCoords(null);
-                        searchAddress(e.target.value, setOrigemSuggestions);
                       }}
                     />
                   </div>
@@ -978,7 +898,6 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                       onChange={(e) => {
                         setDestinoQuery(e.target.value);
                         setDestinoCoords(null);
-                        searchAddress(e.target.value, setDestinoSuggestions);
                       }}
                     />
                   </div>
@@ -1035,7 +954,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                 onClick={() => setShowHeatmap(!showHeatmap)}
                 style={{ borderColor: showHeatmap ? 'var(--primary)' : 'var(--border-color)' }}
               >
-                <Icons.Flame /> {showHeatmap ? 'Espelhos d\'Água: LIGADO' : 'Espelhos d\'Água: DESLIGADO'}
+                <Icons.Flame /> {showHeatmap ? 'Ocorrências aprovadas: LIGADAS' : 'Ocorrências aprovadas: DESLIGADAS'}
               </button>
             </div>
 
@@ -1046,43 +965,25 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                     <TileLayer url={mapTileUrl} maxZoom={19} />
                   </LayersControl.BaseLayer>
                   <LayersControl.BaseLayer name="Visão de Satélite Real">
-                    <TileLayer url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}" maxZoom={19} />
+                    <TileLayer url={env.mapTilesSatellite} maxZoom={19} />
                   </LayersControl.BaseLayer>
                 </LayersControl>
 
                 {origemCoords && <Marker position={origemCoords}><Popup>Sua Posição Atual: {origemQuery}</Popup></Marker>}
                 {destinoCoords && <Marker position={destinoCoords}><Popup>Destino: {destinoQuery}</Popup></Marker>}
 
-                {zones.map(z => {
-                  const valorCalculado = parseFloat(waterLevel) + (z.severidade * 0.3);
-                  const isCritico = valorCalculado > 0.75;
-                  if (showHeatmap) {
-                    const coreColor = isCritico ? '#ef4444' : '#f59e0b';
-                    const midColor = isCritico ? '#f59e0b' : '#3b82f6';
-                    const outerColor = isCritico ? '#3b82f6' : '#10b981';
-
-                    const pExterna = gerarManchaOrganicaDiferenciada(z.coords, z.raioKm, z.seed, 1.4);
-                    const pMedia = gerarManchaOrganicaDiferenciada(z.coords, z.raioKm, z.seed, 0.9);
-                    const pNucleo = gerarManchaOrganicaDiferenciada(z.coords, z.raioKm, z.seed, 0.45);
-
-                    return (
-                      <React.Fragment key={`heat-org-${z.id}`}>
-                        <Polygon positions={pExterna} pathOptions={{ stroke: false, fillColor: outerColor, fillOpacity: 0.18 }} />
-                        <Polygon positions={pMedia} pathOptions={{ stroke: false, fillColor: midColor, fillOpacity: 0.35 }} />
-                        <Polygon positions={pNucleo} pathOptions={{ color: coreColor, weight: 1.5, fillColor: coreColor, fillOpacity: 0.65 }}>
-                          <Popup>
-                            <div style={{ color: '#000' }}>
-                              <strong>Espelho d'Água / Alagamento: {z.nome}</strong><br />
-                              Intensidade do Risco: {(valorCalculado * 100).toFixed(0)}%<br />
-                              Lâmina d'água estim.: {valorCalculado.toFixed(2)} m
-                            </div>
-                          </Popup>
-                        </Polygon>
-                      </React.Fragment>
-                    );
-                  }
-                  return null;
-                })}
+                {showHeatmap && reportes.filter((report) => report.status === 'Aprovado').map((report) => (
+                  <Marker key={report.id} position={[report.latitude, report.longitude]}>
+                    <Popup>
+                      <div style={{ color: '#000' }}>
+                        <strong>{report.hazard_type}</strong><br />
+                        {report.location_label}<br />
+                        {report.description}<br />
+                        {formatDateTime(report.occurred_at)}
+                      </div>
+                    </Popup>
+                  </Marker>
+                ))}
 
                 {routeCoords.length > 0 && (
                   <Polyline positions={routeCoords} pathOptions={{ color: '#38bdf8', weight: 6, opacity: 0.8 }} />
@@ -1128,11 +1029,11 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
             <div className="list-card" style={{ marginTop: '20px' }}>
               <h3>Meus Veículos Cadastrados</h3>
-              {veiculos.filter(v => v.userId === user.email).length === 0 ? (
+              {veiculos.filter(v => v.userId === user.id).length === 0 ? (
                 <p style={{ color: 'var(--text-muted)', marginTop: '10px' }}>Nenhum veículo cadastrado ainda.</p>
               ) : (
                 <div style={{ display: 'grid', gap: '10px', marginTop: '10px' }}>
-                  {veiculos.filter(v => v.userId === user.email).map(v => (
+                  {veiculos.filter(v => v.userId === user.id).map(v => (
                     <div key={v.id} style={{ padding: '12px', background: 'var(--bg-main)', borderRadius: '10px', display: 'flex', justifyContent: 'space-between' }}>
                       <div><strong>{v.marca} - {v.modelo}</strong></div>
                       <div><span>Vão Livre: <strong>{v.altura} cm</strong></span></div>
@@ -1146,30 +1047,18 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
         {/* REPORTAR */}
         {activeTab === 'reportar' && (
-          <div className="fade-in scrollable-tab">
-            <header className="content-title-header"><h1>Reportar Foco de Alagamento</h1><p>Alerte a comunidade sobre trechos críticos.</p></header>
-            <div className="form-card">
-              <form onSubmit={handleSaveReporte} className="grid-form">
-                <div className="input-group full-width">
-                  <label>Tipo de Perigo</label>
-                  <select value={formReporte.tipo} onChange={(e) => setFormReporte({ ...formReporte, tipo: e.target.value })}>
-                    <option>Alagamento Intransitável</option>
-                    <option>Acúmulo Crítico / Atenção</option>
-                    <option>Buraco Oculto sob a Água</option>
-                  </select>
-                </div>
-                <div className="input-group full-width">
-                  <label>Localização / Referência</label>
-                  <input required value={formReporte.local} onChange={(e) => setFormReporte({ ...formReporte, local: e.target.value })} />
-                </div>
-                <div className="input-group full-width">
-                  <label>Detalhes</label>
-                  <textarea required rows="3" value={formReporte.descricao} onChange={(e) => setFormReporte({ ...formReporte, descricao: e.target.value })} placeholder="Escreva sobre o estado da pista..."></textarea>
-                </div>
-                <button type="submit" className="btn-danger">Enviar Alerta</button>
-              </form>
-            </div>
-          </div>
+          <ReportFormScreen
+            form={formReporte}
+            onChange={(nextForm, field) => {
+              if (field === 'local') setReportCoords(null);
+              setFormReporte(nextForm);
+            }}
+            coords={reportCoords}
+            loadingGPS={loadingReportGPS}
+            onGPS={handleReportGPS}
+            onSubmit={handleSaveReporte}
+            icons={Icons}
+          />
         )}
 
         {/* SUCESSO */}
@@ -1188,78 +1077,75 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
         {/* ADMIN */}
         {activeTab === 'admin_reportes' && (
-          <div className="fade-in scrollable-tab">
-            <header className="content-title-header"><h1>Painel de Moderação</h1><p>Validação de alertas enviados por motoristas.</p></header>
-            <div className="list-card">
-              {reportes.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)' }}>Nenhuma ocorrência pendente.</p>
-              ) : (
-                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
-                  <thead>
-                    <tr style={{ borderBottom: '1px solid var(--border-color)', color: 'var(--text-muted)' }}>
-                      <th style={{ padding: '12px' }}>Autor</th>
-                      <th style={{ padding: '12px' }}>Local</th>
-                      <th style={{ padding: '12px' }}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reportes.map(r => (
-                      <tr key={r.id} style={{ borderBottom: '1px solid var(--border-color)' }}>
-                        <td style={{ padding: '12px' }}>{r.autor}</td>
-                        <td style={{ padding: '12px' }}>{r.local}</td>
-                        <td style={{ padding: '12px', color: 'var(--warning)' }}>{r.status}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
+          <ModerationScreen
+            reports={reportes}
+            loading={reportLoading}
+            selectedReport={selectedReport}
+            onSelect={setSelectedReport}
+            onClose={() => setSelectedReport(null)}
+            onStatusChange={handleReportStatus}
+          />
         )}
       </main>
 
       {/* NAV BOTTOM MOBILE */}
       <div className="mobile-bottom-nav">
-        <button className={`bottom-nav-item ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
-          <Icons.Dashboard /><span>Painel</span>
-        </button>
-        <button className={`bottom-nav-item ${activeTab === 'mapa' ? 'active' : ''}`} onClick={() => setActiveTab('mapa')}>
-          <Icons.Map /><span>Mapa</span>
-        </button>
-        <button className={`bottom-nav-item ${activeTab === 'veiculos' ? 'active' : ''}`} onClick={() => setActiveTab('veiculos')}>
-          <Icons.Car /><span>Garagem</span>
-        </button>
-        <button className={`bottom-nav-item ${activeTab === 'reportar' || activeTab === 'sucesso_reporte' ? 'active' : ''}`} onClick={() => setActiveTab('reportar')}>
-          <Icons.Alert /><span>Alertar</span>
-        </button>
+        {user.tipo === 'admin' ? (
+          <button className={`bottom-nav-item ${activeTab === 'admin_reportes' ? 'active' : ''}`} onClick={() => setActiveTab('admin_reportes')}>
+            <Icons.Check /><span>Moderação</span>
+          </button>
+        ) : (
+          <>
+            <button className={`bottom-nav-item ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
+              <Icons.Dashboard /><span>Painel</span>
+            </button>
+            <button className={`bottom-nav-item ${activeTab === 'mapa' ? 'active' : ''}`} onClick={() => setActiveTab('mapa')}>
+              <Icons.Map /><span>Mapa</span>
+            </button>
+            <button className={`bottom-nav-item ${activeTab === 'veiculos' ? 'active' : ''}`} onClick={() => setActiveTab('veiculos')}>
+              <Icons.Car /><span>Garagem</span>
+            </button>
+            <button className={`bottom-nav-item ${activeTab === 'reportar' || activeTab === 'sucesso_reporte' ? 'active' : ''}`} onClick={() => setActiveTab('reportar')}>
+              <Icons.Alert /><span>Alertar</span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-export default function App() {
-  const [user, setUser] = useState(null);
-  const [theme, setTheme] = useState(() => localStorage.getItem('floody_theme') || 'dark');
+function AppContent() {
+  const { user, loading: authLoading, login, logout } = useAuth();
+  const [theme, setTheme] = useState('dark');
+  const [themeLoaded, setThemeLoaded] = useState(false);
 
   useEffect(() => {
-    document.title = "Floody - Sistema Global de Monitoramento e Navegação";
+    if (typeof document !== 'undefined') document.title = 'Floody - Sistema Global de Monitoramento e Navegação';
   }, []);
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('floody_theme', theme);
-  }, [theme]);
+    let active = true;
+    storage.getItem('floody_theme')
+      .then((savedTheme) => {
+        if (active && (savedTheme === 'light' || savedTheme === 'dark')) setTheme(savedTheme);
+      })
+      .finally(() => { if (active) setThemeLoaded(true); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
-    const session = localStorage.getItem('floody_active_session');
-    if (session) {
-      setUser(JSON.parse(session));
+    if (!themeLoaded) return;
+    if (typeof document !== 'undefined') document.documentElement.setAttribute('data-theme', theme);
+    storage.setItem('floody_theme', theme);
+  }, [theme, themeLoaded]);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } catch (error) {
+      console.error(error);
     }
-  }, []);
-
-  const handleLogout = () => {
-    localStorage.removeItem('floody_active_session');
-    setUser(null);
   };
 
   const toggleTheme = () => {
@@ -1268,11 +1154,20 @@ export default function App() {
 
   return (
     <>
-      {!user ? (
-        <AuthScreen onLogin={setUser} theme={theme} onToggleTheme={toggleTheme} />
-      ) : (
-        <MainApp user={user} onLogout={handleLogout} theme={theme} onToggleTheme={toggleTheme} />
-      )}
+      <AppNavigator
+        loading={authLoading}
+        authenticated={Boolean(user)}
+        auth={<AuthNavigator onLogin={login} theme={theme} onToggleTheme={toggleTheme} icons={Icons} />}
+        app={user && <MainApp user={user} onLogout={handleLogout} theme={theme} onToggleTheme={toggleTheme} />}
+      />
     </>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }
