@@ -1,21 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Popup, LayersControl, Polyline, Marker, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Popup, Polyline, Marker, Circle, CircleMarker, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import './App.css';
 import { env } from './src/config/env';
-import { createReport, listReports, subscribeToReports, updateReportStatus } from './src/features/reports/services/reportService';
+import { createReport, listLocalReports, listReports, subscribeToReports, updateReportStatus } from './src/features/reports/services/reportService';
 import ReportFormScreen from './src/features/reports/screens/ReportFormScreen';
 import ModerationScreen from './src/features/reports/screens/ModerationScreen';
 import { createVehicle, listFavoriteReportIds, listVehicles, setFavoriteReport } from './src/features/profile/services/userDataService';
 import { getCurrentPrecipitation } from './src/features/dashboard/services/weatherService';
-import { resolveAddress, searchAddresses } from './src/features/map/services/geocodingService';
+import { resolveAddress, reverseGeocode, searchAddresses } from './src/features/map/services/geocodingService';
 import { getDrivingRoute } from './src/features/map/services/routingService';
 import { listVehicleMakes, listVehicleModels } from './src/features/profile/services/vehicleCatalogService';
 import { buildUrl } from './src/services/api/externalClient';
 import { useDebouncedValue } from './src/hooks/useDebouncedValue';
 import { useLocation } from './src/hooks/useLocation';
-import { useNetwork } from './src/hooks/useNetwork';
 import { storage } from './src/services/storage/storage';
 import { AuthProvider, useAuth } from './src/store/AuthContext';
 import AuthNavigator from './src/navigation/AuthNavigator';
@@ -137,6 +136,133 @@ const Icons = {
   )
 };
 
+const LOCAL_AREA_PROFILES = [
+  { name: 'Recife Antigo', coords: [-8.0631, -34.8711], floodRisk: 72, rain: 14.2, traffic: 68, works: 1, hazards: 2, floodAlerts: 3, trafficAlerts: 2 },
+  { name: 'Av. Agamenon Magalhães', coords: [-8.0475, -34.8969], floodRisk: 56, rain: 13.6, traffic: 82, works: 2, hazards: 3, floodAlerts: 2, trafficAlerts: 4 },
+  { name: 'Boa Viagem', coords: [-8.1191, -34.8964], floodRisk: 41, rain: 10.8, traffic: 55, works: 1, hazards: 1, floodAlerts: 1, trafficAlerts: 2 },
+  { name: 'Centro', coords: [-8.0607, -34.8811], floodRisk: 64, rain: 12.4, traffic: 71, works: 0, hazards: 4, floodAlerts: 2, trafficAlerts: 3 },
+];
+
+const DEMO_HEAT_SPOTS = [
+  { name: 'Recife Antigo', coords: [-8.0631, -34.8711], risk: 'high' },
+  { name: 'Centro', coords: [-8.0607, -34.8811], risk: 'medium' },
+  { name: 'Av. Agamenon Magalhães', coords: [-8.0475, -34.8969], risk: 'medium' },
+  { name: 'Boa Viagem', coords: [-8.1191, -34.8964], risk: 'low' },
+  { name: 'Imbiribeira', coords: [-8.116, -34.909], risk: 'medium' },
+  { name: 'Olinda', coords: [-8.0089, -34.8553], risk: 'low' },
+  { name: 'Jaboatão dos Guararapes', coords: [-8.112, -34.937], risk: 'medium' },
+];
+
+const DEMO_STREET_INCIDENTS = [
+  { name: 'Trânsito intenso · Av. Agamenon Magalhães', kind: 'traffic', road: 'Av. Agamenon Magalhães', coords: [-8.05235, -34.8978], detail: 'Retenção simulada no corredor da Agamenon Magalhães.' },
+  { name: 'Obra ativa · Av. Caxangá', kind: 'works', road: 'Av. Caxangá', coords: [-8.027, -34.9425], detail: 'Obra demonstrativa com possível impacto na circulação.' },
+  { name: 'Buraco reportado · Av. Boa Viagem', kind: 'hazard', road: 'Av. Boa Viagem', coords: [-8.1265, -34.9004], detail: 'Perigo viário demonstrativo próximo à orla.' },
+  { name: 'Trânsito lento · Av. Recife', kind: 'traffic', road: 'Av. Recife', coords: [-8.1052, -34.924], detail: 'Retenção simulada na Av. Recife.' },
+  { name: 'Interdição parcial · Centro', kind: 'works', road: 'Centro', coords: [-8.0607, -34.8811], detail: 'Interdição demonstrativa no Centro do Recife.' },
+];
+
+const DEMO_STREET_ROADS = [
+  {
+    name: 'Av. Agamenon Magalhães',
+    positions: [
+      [-8.0215, -34.8972], [-8.029, -34.8977], [-8.037, -34.898], [-8.045, -34.898],
+      [-8.05235, -34.8978], [-8.06, -34.897], [-8.068, -34.8955], [-8.076, -34.893],
+    ],
+  },
+  {
+    name: 'Av. Caxangá',
+    positions: [
+      [-8.027, -34.9425], [-8.035, -34.936], [-8.041, -34.928], [-8.046, -34.919],
+      [-8.05, -34.91], [-8.053, -34.901], [-8.056, -34.892],
+    ],
+  },
+  {
+    name: 'Av. Boa Viagem',
+    positions: [
+      [-8.092, -34.884], [-8.1, -34.887], [-8.108, -34.89], [-8.116, -34.894],
+      [-8.1265, -34.9004], [-8.136, -34.904], [-8.146, -34.907],
+    ],
+  },
+  {
+    name: 'Av. Recife',
+    positions: [
+      [-8.083, -34.925], [-8.091, -34.9245], [-8.099, -34.924], [-8.1052, -34.924],
+      [-8.113, -34.923], [-8.121, -34.921],
+    ],
+  },
+];
+
+function normalizeText(value) {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+}
+
+function classifyHazard(report) {
+  const text = normalizeText(`${report.hazard_type} ${report.description}`);
+  if (/alag|enchent|intransitavel|acumulo/.test(text)) return 'flood';
+  if (/transito|congestion|retencao/.test(text)) return 'traffic';
+  if (/obra|interdicao/.test(text)) return 'works';
+  return 'hazard';
+}
+
+function findAreaProfile(name, coords) {
+  const normalizedName = normalizeText(name);
+  const matchedProfile = LOCAL_AREA_PROFILES.find((profile) =>
+    normalizedName.includes(normalizeText(profile.name))
+    || normalizeText(profile.name).includes(normalizedName)
+  );
+  if (matchedProfile) return matchedProfile;
+
+  return LOCAL_AREA_PROFILES.reduce((closest, profile) => {
+    const distance = Math.hypot(profile.coords[0] - coords[0], profile.coords[1] - coords[1]);
+    const closestDistance = Math.hypot(closest.coords[0] - coords[0], closest.coords[1] - coords[1]);
+    return distance < closestDistance ? profile : closest;
+  }, LOCAL_AREA_PROFILES[0]);
+}
+
+function getAreaIndicators(name, coords, reports, demoRain, realRain) {
+  const profile = findAreaProfile(name, coords);
+  const nearbyReports = reports.filter((report) =>
+    report.status === 'Aprovado'
+    && Math.abs(report.latitude - coords[0]) <= 0.025
+    && Math.abs(report.longitude - coords[1]) <= 0.03
+  );
+  const counts = nearbyReports.reduce((totals, report) => {
+    totals[classifyHazard(report)] += 1;
+    return totals;
+  }, { flood: 0, traffic: 0, works: 0, hazard: 0 });
+  const floodRisk = Math.min(99, profile.floodRisk + counts.flood * 8);
+  const traffic = Math.min(99, profile.traffic + counts.traffic * 6);
+  const activeWorks = profile.works + counts.works;
+  const hazards = profile.hazards + counts.hazard;
+  const riskLevel = (value) => value >= 70 ? 'Alto' : value >= 45 ? 'Moderado' : 'Baixo';
+
+  return {
+    profile,
+    rain: realRain ?? demoRain,
+    floodRisk,
+    traffic,
+    activeWorks,
+    hazards,
+    alerts: [
+      { label: 'Alagamentos', value: `${riskLevel(floodRisk)} · ${floodRisk}% de risco`, count: profile.floodAlerts + counts.flood },
+      { label: 'Trânsito lento', value: `${riskLevel(traffic)} · ${traffic}% de retenção`, count: profile.trafficAlerts + counts.traffic },
+      { label: 'Obras na pista', value: `${activeWorks} ${activeWorks === 1 ? 'ponto ativo' : 'pontos ativos'}`, count: activeWorks },
+      { label: 'Buracos / perigos na via', value: `${hazards} ${hazards === 1 ? 'ponto reportado' : 'pontos reportados'}`, count: hazards },
+    ],
+  };
+}
+
+function getDistanceKm(start, end) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const [startLat, startLng] = start.map(radians);
+  const [endLat, endLng] = end.map(radians);
+  const latitudeDelta = endLat - startLat;
+  const longitudeDelta = endLng - startLng;
+  const arc = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(startLat) * Math.cos(endLat) * Math.sin(longitudeDelta / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(arc), Math.sqrt(1 - arc));
+}
+
 // Ajustador de câmera do mapa
 function RouteBoundsAdjuster({ coords, centerCoords }) {
   const map = useMap();
@@ -150,9 +276,34 @@ function RouteBoundsAdjuster({ coords, centerCoords }) {
   return null;
 }
 
+function MapViewSizeUpdater({ activeTab, mapView }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const timer = setTimeout(() => map.invalidateSize({ pan: false }), 120);
+    return () => clearTimeout(timer);
+  }, [map, activeTab, mapView]);
+
+  return null;
+}
+
+function getExactPosition(getCurrentLocation) {
+  if (typeof navigator !== 'undefined' && navigator.geolocation?.getCurrentPosition) {
+    return new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => resolve([coords.latitude, coords.longitude]),
+        reject,
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
+  }
+  return getCurrentLocation();
+}
+
 // Componente Principal do App
 function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [activeTab, setActiveTab] = useState(user.tipo === 'admin' ? 'admin_reportes' : 'dashboard');
+  const [isMounted, setIsMounted] = useState(false);
   const [veiculos, setVeiculos] = useState([]);
   const [reportes, setReportes] = useState([]);
   const [reportLoading, setReportLoading] = useState(true);
@@ -165,8 +316,8 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   // Meteorologia Real e Monitoramento Global
   const [realRain, setRealRain] = useState(null);
   const [loadingApi, setLoadingApi] = useState(true);
-  const [weatherError, setWeatherError] = useState('');
-  const [cidadeAtualNome, setCidadeAtualNome] = useState('Sua Localização');
+  const [demoRain, setDemoRain] = useState(14);
+  const [cidadeAtualNome, setCidadeAtualNome] = useState('Recife, PE');
   const [currentCoords, setCurrentCoords] = useState([-8.05428, -34.8813]);
   
   const [buscaCentralQuery, setBuscaCentralQuery] = useState('');
@@ -182,7 +333,9 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [favoritos, setFavoritos] = useState([]);
   
   // Mapa de Calor Toggle
-  const [showHeatmap, setShowHeatmap] = useState(true);
+  const [mapView, setMapView] = useState('flood');
+  const [mapTilesUnavailable, setMapTilesUnavailable] = useState(false);
+  const [routePanelCollapsed, setRoutePanelCollapsed] = useState(false);
   
   // Rota e Navegação Ao Vivo
   const [origemQuery, setOrigemQuery] = useState('Recife, PE');
@@ -202,6 +355,10 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   
   const [isNavigating, setIsNavigating] = useState(false);
 
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
   // FIPE States
   const [marcas, setMarcas] = useState([]);
   const [modelos, setModelos] = useState([]);
@@ -211,7 +368,6 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const defaultCenter = [-8.05428, -34.8813];
   const { getCurrentLocation, watchLocation } = useLocation();
-  const isOnline = useNetwork();
 
   useEffect(() => {
     if (user.tipo === 'admin' && activeTab !== 'admin_reportes') setActiveTab('admin_reportes');
@@ -221,21 +377,30 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const weatherLocationRef = useRef({ coords: [-8.05428, -34.8813], name: 'Recife, PE' });
   const weatherRequestRef = useRef(0);
 
+  useEffect(() => {
+    const telemetryTimer = setInterval(() => {
+      setDemoRain((currentValue) => {
+        const nextValue = currentValue + (Math.random() - 0.5) * 0.4;
+        return Math.max(12, Math.min(16, Number(nextValue.toFixed(1))));
+      });
+    }, 3500);
+    return () => clearInterval(telemetryTimer);
+  }, []);
+
   const fetchWeatherForCoords = async (lat, lng, nomeLocal) => {
     const requestId = ++weatherRequestRef.current;
     const locationName = nomeLocal || weatherLocationRef.current.name;
     weatherLocationRef.current = { coords: [lat, lng], name: locationName };
     setLoadingApi(true);
-    setWeatherError('');
     setCidadeAtualNome(locationName);
+    setCurrentCoords([lat, lng]);
+    setRealRain(null);
     try {
       const precipitation = await getCurrentPrecipitation(lat, lng);
       if (requestId !== weatherRequestRef.current) return;
       setRealRain(precipitation);
-    } catch (error) {
-      if (requestId === weatherRequestRef.current) {
-        setWeatherError(error instanceof Error ? error.message : 'Meteorologia indisponível.');
-      }
+    } catch {
+      if (requestId === weatherRequestRef.current) setRealRain(null);
     } finally {
       if (requestId === weatherRequestRef.current) setLoadingApi(false);
     }
@@ -277,15 +442,14 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const handleCentralSearch = async (e) => {
     e.preventDefault();
     if (!buscaCentralQuery || buscaCentralQuery.trim().length < 2) return;
-    try {
-      const coords = await geocodeEnderecoDireto(buscaCentralQuery.trim());
-      if (coords) {
-        fetchWeatherForCoords(coords[0], coords[1], buscaCentralQuery.trim());
-        setBuscaCentralSuggestions([]);
-      }
-    } catch (error) {
-      setWeatherError(error instanceof Error ? error.message : 'Busca de endereço indisponível.');
-    }
+    const query = buscaCentralQuery.trim();
+    const coords = await geocodeEnderecoDireto(query);
+    const profile = findAreaProfile(query, currentCoords);
+    fetchWeatherForCoords(
+      ...(coords || profile.coords),
+      query
+    );
+    setBuscaCentralSuggestions([]);
   };
 
   const handleCentralInputChange = (texto) => {
@@ -323,6 +487,17 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
         if (active) setReportLoading(false);
       }
     };
+
+    if (user.id.startsWith('local-')) {
+      listLocalReports().then((data) => {
+        if (active) setReportes(data);
+      }).catch((error) => {
+        if (active) setReportError(error.message);
+      }).finally(() => {
+        if (active) setReportLoading(false);
+      });
+      return () => { active = false; };
+    }
 
     loadReports();
     const unsubscribe = subscribeToReports(loadReports);
@@ -371,7 +546,6 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     } catch (error) {
       if (error.name !== 'AbortError') {
         setSuggestions([]);
-        setReportError(error.message);
       }
     }
   };
@@ -409,10 +583,9 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const geocodeEnderecoDireto = async (enderecoTexto) => {
     try {
       return await resolveAddress(enderecoTexto);
-    } catch (error) {
-      setReportError(error.message);
+    } catch {
+      return null;
     }
-    return null;
   };
 
   const handleUseGPS = () => {
@@ -460,15 +633,26 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
       setRouteInfo({
         distancia: `${distKm} km`,
         duracao: `${duracaoMin} min`,
-        chuvaDestino: chuvaDestino == null ? 'Sem dados' : `${chuvaDestino} mm`,
+        chuvaDestino: chuvaDestino == null ? `${demoRain.toFixed(1)} mm/h (estimativa)` : `${chuvaDestino} mm/h`,
         statusRisco: 'Consulte as ocorrências aprovadas no mapa',
         bgRisco: 'var(--primary)',
         origem: origemQuery,
         destino: destinoQuery
       });
       setIsNavigating(true);
-    } catch (error) {
-      setReportError(error instanceof Error ? error.message : 'Serviço de rota temporariamente indisponível.');
+    } catch {
+      const distance = getDistanceKm(pOrigem, pDestino);
+      setRouteCoords([pOrigem, pDestino]);
+      setRouteInfo({
+        distancia: `${distance.toFixed(1)} km (estimativa)`,
+        duracao: `${Math.max(1, Math.round((distance / 25) * 60))} min (estimativa)`,
+        chuvaDestino: `${demoRain.toFixed(1)} mm/h (simulada)`,
+        statusRisco: 'Rota direta · consulte os alertas locais',
+        bgRisco: 'var(--warning)',
+        origem: origemQuery,
+        destino: destinoQuery,
+      });
+      setIsNavigating(true);
     } finally {
       setLoadingRoute(false);
     }
@@ -521,7 +705,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
       setFormReporte({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
       setActiveTab('sucesso_reporte');
     } catch (error) {
-      setReportError(error instanceof Error ? error.message : 'Não foi possível enviar a ocorrência.');
+      setReportError(error instanceof Error ? error.message : 'Não foi possível registrar a ocorrência localmente.');
     }
   };
 
@@ -541,10 +725,19 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const handleReportGPS = () => {
     setLoadingReportGPS(true);
-    getCurrentLocation()
-      .then((coords) => {
+    getExactPosition(getCurrentLocation)
+      .then(async (coords) => {
         setReportCoords(coords);
-        setFormReporte((current) => ({ ...current, local: 'Minha localização atual' }));
+        let address = null;
+        try {
+          address = await reverseGeocode(coords[0], coords[1]);
+        } catch {
+          address = null;
+        }
+        setFormReporte((current) => ({
+          ...current,
+          local: address || `Coordenadas ${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
+        }));
         setReportError('');
       })
       .catch((error) => setReportError(error.message))
@@ -554,6 +747,20 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const mapTileUrl = theme === 'dark'
     ? env.mapTilesDark
     : env.mapTilesLight;
+  const preferredMapTileUrl = mapView === 'satellite' ? env.mapTilesSatellite : mapTileUrl;
+  const areaIndicators = getAreaIndicators(cidadeAtualNome, currentCoords, reportes, demoRain, realRain);
+  const nearbyAreas = [...LOCAL_AREA_PROFILES].sort((first, second) =>
+    Math.hypot(first.coords[0] - currentCoords[0], first.coords[1] - currentCoords[1])
+    - Math.hypot(second.coords[0] - currentCoords[0], second.coords[1] - currentCoords[1])
+  );
+  const normalizedReportError = normalizeText(reportError);
+  const showReportError = reportError
+    && !normalizedReportError.startsWith('servico externo indisponivel')
+    && !normalizedReportError.startsWith('servico externo respondeu com erro');
+
+  useEffect(() => {
+    setMapTilesUnavailable(false);
+  }, [mapView, theme]);
 
   const termoPesquisado = filtroTextoZona.trim().toLocaleLowerCase();
   const reportesExibidos = reportes
@@ -614,16 +821,15 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
       {/* WORKSPACE PRINCIPAL */}
       <main className="pro-workspace">
-        {!isOnline && <InlineAlert>Sem conexão. Dados podem estar desatualizados.</InlineAlert>}
-        {reportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
+        {showReportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
           <div className="fade-in scrollable-tab">
             <header className="content-title-header">
-              <h1>Central de Monitoramento Global</h1>
-              <p>Monitoramento meteorológico em tempo real focado em sua localização e pesquisável para qualquer lugar do mundo.</p>
+              <h1>Floody · Central ao Vivo</h1>
+              <p>Condições de chuva e ocorrências na Região Metropolitana do Recife.</p>
             </header>
 
-            {/* FORMULÁRIO DE BUSCA GLOBAL (CIDADES/PAÍSES) */}
+            {/* Busca local limitada a Pernambuco */}
             <form onSubmit={handleCentralSearch} style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px', width: '100%' }}>
               <div style={{ position: 'relative', width: '100%' }}>
                 <div className="route-input-field" style={{ width: '100%', background: 'var(--bg-card)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px 16px' }}>
@@ -631,7 +837,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   <input
                     type="text"
                     style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text-main)', fontSize: '0.95rem', outline: 'none' }}
-                    placeholder="Pesquisar cidade, estado ou país existente (Ex: São Paulo, Paris, Tóquio)..."
+                    placeholder="Buscar rua, bairro ou cidade em Pernambuco..."
                     value={buscaCentralQuery}
                     onChange={(e) => handleCentralInputChange(e.target.value)}
                   />
@@ -665,20 +871,73 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
               </button>
             </form>
 
+            <section className="regional-areas" aria-label="Pontos relevantes da região">
+              <div>
+                <h3>Locais importantes da região</h3>
+                <p>Selecione um ponto próximo para consultar os indicadores locais.</p>
+              </div>
+              <div className="regional-area-list">
+                {nearbyAreas.map((area) => (
+                  <button
+                    type="button"
+                    key={area.name}
+                    className={`regional-area-button ${normalizeText(cidadeAtualNome).includes(normalizeText(area.name)) ? 'selected' : ''}`}
+                    onClick={() => {
+                      selectedCentralAddressRef.current = area.name;
+                      setBuscaCentralQuery(area.name);
+                      fetchWeatherForCoords(area.coords[0], area.coords[1], area.name);
+                      setBuscaCentralSuggestions([]);
+                    }}
+                  >
+                    {area.name}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="area-status-card" aria-label={`Condições em ${cidadeAtualNome}`}>
+              <div className="area-status-heading">
+                <div>
+                  <h3>Status completo da área</h3>
+                  <p>{cidadeAtualNome} · indicadores locais demonstrativos e relatos aprovados próximos</p>
+                </div>
+                <span className="simulation-tag">{realRain == null || loadingApi ? 'ESTIMATIVA LOCAL' : 'CHUVA ATUALIZADA'}</span>
+              </div>
+              <div className="area-alert-grid">
+                {areaIndicators.alerts.map((alert) => (
+                  <div className="area-alert-item" key={alert.label}>
+                    <span>{alert.label}</span>
+                    <strong>{alert.value}</strong>
+                    <small>{alert.count} {alert.count === 1 ? 'sinal na região' : 'sinais na região'}</small>
+                  </div>
+                ))}
+              </div>
+            </section>
+
             <div className="live-stats-grid">
               <div className="stat-card">
-                <div className="stat-header"><span>Precipitação atual (Open-Meteo)</span><span className="live-tag">AO VIVO</span></div>
-                <h2>{loadingApi ? 'Carregando...' : realRain == null ? 'Sem dados' : `${realRain} mm`}</h2>
-                <div className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cidadeAtualNome}</div>
+                <div className="stat-header"><span>Risco de alagamento</span><span className="live-tag">AO VIVO</span></div>
+                <h2>{areaIndicators.floodRisk}%</h2>
+                <div className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {areaIndicators.rain.toFixed(1)} mm/h de chuva · {cidadeAtualNome}
+                </div>
               </div>
               <div className="stat-card">
-                <div className="stat-header"><span>Ocorrências confirmadas</span><span className="live-tag blue">MODERADAS</span></div>
-                <h2>{reportes.filter((report) => report.status === 'Aprovado').length}</h2>
-                <div className="stat-footer">Alertas aprovados pela equipe de moderação</div>
+                <div className="stat-header"><span>Retenção no trânsito</span><span className="live-tag blue">VIAS</span></div>
+                <h2>{areaIndicators.traffic}%</h2>
+                <div className="stat-footer">{areaIndicators.alerts[1].count} trechos com trânsito lento</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-header"><span>Obras / interdições</span><span className="live-tag blue">ATIVAS</span></div>
+                <h2>{areaIndicators.activeWorks}</h2>
+                <div className="stat-footer">Pontos ativos na região monitorada</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-header"><span>Buracos / perigos</span><span className="live-tag">VIAS</span></div>
+                <h2>{areaIndicators.hazards}</h2>
+                <div className="stat-footer">Pontos reportados na região monitorada</div>
               </div>
             </div>
-            {weatherError && <p role="status" className="auth-erro">{weatherError}</p>}
-
             {/* SEÇÃO DE PONTOS CRÍTICOS COM DESIGN TOTALMENTE PADRONIZADO */}
             <div className="chart-card-box" style={{ marginTop: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
@@ -838,20 +1097,34 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
         {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS */}
         {activeTab === 'mapa' && (
           <div className="fade-in fullscreen-tab">
-            <div className="route-floating-panel">
+            <div className={`route-floating-panel ${routePanelCollapsed ? 'collapsed' : ''}`}>
               <div className="route-panel-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span><Icons.Navigation /> Navegação Segura Ao Vivo</span>
-                {routeInfo && (
-                  <button 
-                    type="button" 
-                    onClick={handleCancelRoute} 
-                    style={{ background: 'var(--danger)', color: '#fff', border: 'none', borderRadius: '6px', padding: '4px 8px', fontSize: '0.75rem', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    title="Cancelar rota atual"
+                <span><Icons.Navigation /> {routePanelCollapsed ? 'Navegação' : 'Navegação Segura Ao Vivo'}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  {routeInfo && !routePanelCollapsed && (
+                    <button
+                      type="button"
+                      onClick={handleCancelRoute}
+                      className="route-panel-action"
+                      title="Cancelar rota atual"
+                    >
+                      <Icons.Close /> Cancelar
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="route-panel-collapse"
+                    onClick={() => setRoutePanelCollapsed((collapsed) => !collapsed)}
+                    aria-expanded={!routePanelCollapsed}
+                    aria-label={routePanelCollapsed ? 'Expandir navegação' : 'Recolher navegação'}
+                    title={routePanelCollapsed ? 'Expandir navegação' : 'Recolher navegação'}
                   >
-                    <Icons.Close /> Cancelar Rota
+                    {routePanelCollapsed ? <Icons.ChevronDown /> : <Icons.ChevronUp />}
                   </button>
-                )}
+                </div>
               </div>
+              {!routePanelCollapsed && (
+                <>
               <form onSubmit={handleBuscarRota} className="route-inputs">
                 <div className="search-box-group">
                   <div className="search-box-header">
@@ -946,44 +1219,190 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   </div>
                 </div>
               )}
+                </>
+              )}
             </div>
 
-            <div className="heatmap-controls-overlay">
-              <button
-                className="heatmap-toggle-btn"
-                onClick={() => setShowHeatmap(!showHeatmap)}
-                style={{ borderColor: showHeatmap ? 'var(--primary)' : 'var(--border-color)' }}
-              >
-                <Icons.Flame /> {showHeatmap ? 'Ocorrências aprovadas: LIGADAS' : 'Ocorrências aprovadas: DESLIGADAS'}
+            <div className="heatmap-controls-overlay" role="group" aria-label="Camadas do mapa">
+              <button type="button" className={mapView === 'flood' ? 'active' : ''} onClick={() => setMapView('flood')}>
+                <Icons.Flame /> Visão Alagamento
+              </button>
+              <button type="button" className={mapView === 'streets' ? 'active' : ''} onClick={() => setMapView('streets')}>
+                Visão Ruas
+              </button>
+              <button type="button" className={mapView === 'satellite' ? 'active' : ''} onClick={() => setMapView('satellite')}>
+                Visão Satélite
               </button>
             </div>
 
             <div className="map-container-box">
-              <MapContainer center={defaultCenter} zoom={13} maxZoom={19} style={{ height: '100%', width: '100%' }}>
-                <LayersControl position="topright">
-                  <LayersControl.BaseLayer checked name="Visão de Ruas, Obras e Aeroportos">
-                    <TileLayer url={mapTileUrl} maxZoom={19} />
-                  </LayersControl.BaseLayer>
-                  <LayersControl.BaseLayer name="Visão de Satélite Real">
-                    <TileLayer url={env.mapTilesSatellite} maxZoom={19} />
-                  </LayersControl.BaseLayer>
-                </LayersControl>
+              {!isMounted && <div className="map-loading-placeholder" aria-label="Carregando mapa" />}
+              {isMounted && (
+              <MapContainer center={defaultCenter} zoom={13} minZoom={10} maxZoom={18} style={{ height: '100%', width: '100%' }}>
+                <TileLayer
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  minZoom={10}
+                  maxZoom={18}
+                  attribution="&copy; OpenStreetMap contributors"
+                />
+                {!mapTilesUnavailable && preferredMapTileUrl && (
+                  <TileLayer
+                    url={preferredMapTileUrl}
+                    minZoom={10}
+                    maxZoom={18}
+                    eventHandlers={{ tileerror: () => setMapTilesUnavailable(true) }}
+                  />
+                )}
+                <MapViewSizeUpdater activeTab={activeTab} mapView={mapView} />
 
                 {origemCoords && <Marker position={origemCoords}><Popup>Sua Posição Atual: {origemQuery}</Popup></Marker>}
                 {destinoCoords && <Marker position={destinoCoords}><Popup>Destino: {destinoQuery}</Popup></Marker>}
 
-                {showHeatmap && reportes.filter((report) => report.status === 'Aprovado').map((report) => (
-                  <Marker key={report.id} position={[report.latitude, report.longitude]}>
-                    <Popup>
-                      <div style={{ color: '#000' }}>
-                        <strong>{report.hazard_type}</strong><br />
-                        {report.location_label}<br />
-                        {report.description}<br />
-                        {formatDateTime(report.occurred_at)}
-                      </div>
-                    </Popup>
-                  </Marker>
-                ))}
+                {mapView === 'streets' && theme === 'light' && DEMO_STREET_ROADS.map((road) => {
+                  const roadIncident = DEMO_STREET_INCIDENTS.find((incident) => incident.road === road.name);
+                  const lineColor = roadIncident?.kind === 'traffic'
+                    ? '#dc2626'
+                    : roadIncident ? '#ea580c' : '#2563eb';
+
+                  return (
+                    <Polyline
+                      key={`street-road-${road.name}`}
+                      positions={road.positions}
+                      pathOptions={{ color: lineColor, weight: 7, opacity: 0.82, lineCap: 'round', lineJoin: 'round' }}
+                    >
+                      <Popup>
+                        <strong>{road.name}, Recife/PE</strong><br />
+                        {roadIncident ? roadIncident.detail : 'Via principal monitorada.'}<br />
+                        Traçado viário ilustrativo; alertas identificados são marcados sobre a via.
+                      </Popup>
+                    </Polyline>
+                  );
+                })}
+
+                {mapView === 'flood' && DEMO_HEAT_SPOTS.map((spot) => {
+                  const riskScale = spot.risk === 'high' ? 1 : spot.risk === 'medium' ? 0.8 : 0.6;
+                  const area = findAreaProfile(spot.name, spot.coords);
+                  const heatRings = [
+                    { radius: 1100, color: '#22c55e', fillOpacity: 0.2 },
+                    { radius: 850, color: '#06b6d4', fillOpacity: 0.3 },
+                    { radius: 620, color: '#facc15', fillOpacity: 0.4 },
+                    { radius: 400, color: '#f97316', fillOpacity: 0.5 },
+                    { radius: 220, color: '#ef4444', fillOpacity: 0.6 },
+                  ];
+                  return (
+                    <React.Fragment key={`heat-${spot.name}`}>
+                      {heatRings.map((ring) => (
+                        <Circle
+                          key={`${spot.name}-${ring.color}`}
+                          center={spot.coords}
+                          radius={ring.radius * riskScale}
+                          pathOptions={{
+                            color: ring.color,
+                            fillColor: ring.color,
+                            fillOpacity: ring.fillOpacity,
+                            opacity: 0,
+                            weight: 0,
+                          }}
+                        >
+                          <Popup>
+                            <strong>{spot.name}, Recife/PE</strong><br />
+                            Risco estimado de alagamento: {area.floodRisk}% ({spot.risk === 'high' ? 'alto' : spot.risk === 'medium' ? 'moderado' : 'baixo'}).<br />
+                            Chuva informada para a região: {area.rain.toFixed(1)} mm/h.<br />
+                            Manchas de calor demonstrativas; confirme as condições no local.
+                          </Popup>
+                        </Circle>
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
+
+                {mapView === 'flood' && reportes
+                  .filter((report) => report.status === 'Aprovado' && classifyHazard(report) === 'flood')
+                  .map((report) => {
+                    const reportRings = [
+                      { radius: 700, color: '#06b6d4', fillOpacity: 0.2 },
+                      { radius: 500, color: '#facc15', fillOpacity: 0.35 },
+                      { radius: 320, color: '#f97316', fillOpacity: 0.5 },
+                      { radius: 160, color: '#ef4444', fillOpacity: 0.6 },
+                    ];
+                    return (
+                      <React.Fragment key={`report-heat-${report.id}`}>
+                        {reportRings.map((ring) => (
+                          <Circle
+                            key={`${report.id}-${ring.color}`}
+                            center={[report.latitude, report.longitude]}
+                            radius={ring.radius}
+                            pathOptions={{ color: ring.color, fillColor: ring.color, fillOpacity: ring.fillOpacity, opacity: 0, weight: 0 }}
+                          >
+                            <Popup>
+                              <strong>{report.location_label}, Recife/PE</strong><br />
+                              Relato confirmado de alagamento.<br />
+                              {report.description}<br />
+                              Atualizado em {formatDateTime(report.occurred_at)}.
+                            </Popup>
+                          </Circle>
+                        ))}
+                      </React.Fragment>
+                    );
+                  })}
+
+                {mapView === 'streets' && DEMO_STREET_INCIDENTS.map((incident) => {
+                  const incidentType = incident.kind === 'traffic'
+                    ? 'Trânsito lento'
+                    : incident.kind === 'works' ? 'Obra / interdição' : 'Buraco / perigo viário';
+                  const incidentColor = incident.kind === 'traffic' ? '#ef4444' : '#f97316';
+                  return (
+                    <CircleMarker
+                      key={incident.name}
+                      center={incident.coords}
+                      radius={9}
+                      pathOptions={{
+                        color: '#ffffff',
+                        weight: 2,
+                        fillColor: incidentColor,
+                        fillOpacity: 0.95,
+                      }}
+                    >
+                      <Popup>
+                        <strong>{incident.name}</strong><br />
+                        {incident.detail}<br />
+                        Categoria: {incidentType}<br />
+                        Coordenadas: {incident.coords[0].toFixed(5)}, {incident.coords[1].toFixed(5)}<br />
+                        Localização demonstrativa em Recife/PE; não representa telemetria viária ao vivo.
+                      </Popup>
+                    </CircleMarker>
+                  );
+                })}
+
+                {mapView === 'streets' && reportes
+                  .filter((report) => report.status === 'Aprovado')
+                  .map((report) => {
+                    const hazardKind = classifyHazard(report);
+                    const category = hazardKind === 'traffic'
+                      ? 'Trânsito'
+                      : hazardKind === 'works' ? 'Obra / interdição' : 'Perigo viário';
+                    return (
+                      <CircleMarker
+                        key={`street-report-${report.id}`}
+                        center={[report.latitude, report.longitude]}
+                        radius={9}
+                        pathOptions={{
+                          color: '#ffffff',
+                          weight: 2,
+                          fillColor: hazardKind === 'traffic' ? '#ef4444' : '#f97316',
+                          fillOpacity: 1,
+                        }}
+                      >
+                        <Popup>
+                          <strong>{report.location_label}, Recife/PE</strong><br />
+                          Categoria: {category}<br />
+                          Relato: {report.hazard_type}<br />
+                          {report.description}<br />
+                          Atualizado em {formatDateTime(report.occurred_at)}.
+                        </Popup>
+                      </CircleMarker>
+                    );
+                  })}
 
                 {routeCoords.length > 0 && (
                   <Polyline positions={routeCoords} pathOptions={{ color: '#38bdf8', weight: 6, opacity: 0.8 }} />
@@ -991,6 +1410,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                 
                 <RouteBoundsAdjuster coords={routeCoords} centerCoords={isNavigating ? origemCoords : null} />
               </MapContainer>
+              )}
             </div>
           </div>
         )}
@@ -1068,7 +1488,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
               <div style={{ color: 'var(--success)', marginBottom: '10px' }}>
                 <Icons.Check />
               </div>
-              <h2>Alerta Registrado com Sucesso!</h2>
+              <h2>Ocorrência registrada com sucesso!</h2>
               <p style={{ margin: '12px 0 24px 0', color: 'var(--text-muted)' }}>Sua contribuição ajuda a salvar rotas em tempo real.</p>
               <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Voltar à Central</button>
             </div>
