@@ -1,0 +1,16 @@
+import React, { useState } from 'react';
+import { useOfficialAlerts } from '../hooks/useOfficialAlerts';
+import { ALERT_SCOPES, formatAlertDate } from '../scopes';
+export default function OfficialAlertsPanel() {
+  const [scopeId, setScopeId] = useState('recife');
+  const scope = ALERT_SCOPES.find(item => item.id === scopeId);
+  const { snapshot, alerts, error, loading, stale, refresh, now } = useOfficialAlerts(scope);
+  return <section className="official-alerts" aria-labelledby="official-alerts-title">
+    <header className="official-alerts-header"><div><h2 id="official-alerts-title">Avisos meteorológicos do INMET</h2><p>Distribuídos pelo RadarMeteorológico · coleta gratuita</p></div><button type="button" className="btn-action-secondary" disabled={loading} onClick={refresh}>{loading ? 'Consultando…' : 'Verificar atualização'}</button></header>
+    <label className="input-group">Região dos avisos<select value={scopeId} onChange={event => setScopeId(event.target.value)}>{ALERT_SCOPES.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+    <p className="alerts-caption">Este filtro é independente da busca de endereço e do mapa. Avisos municipais não confirmam alagamento em uma rua específica.</p>
+    <div aria-live="polite">{snapshot && <p className="alerts-caption">Última coleta: {formatAlertDate(snapshot.fetchedAt)}{snapshot.providerUpdatedAt ? ` · Atualização do provedor: ${formatAlertDate(snapshot.providerUpdatedAt)}` : ''}. Consulta a cada 10 minutos enquanto esta tela estiver aberta.</p>}{error && <p className="alerts-error" role="alert">{error} {snapshot ? 'Exibindo a última coleta disponível; os avisos podem ter sido alterados ou cancelados.' : 'Não foi possível verificar se há avisos.'}</p>}{stale && <p className="alerts-error">Dados em cache, sem confirmação atual do provedor.</p>}{!snapshot && loading && <p>Buscando avisos reais…</p>}{snapshot && !alerts.length && !stale && <p>Nenhum aviso vigente ou previsto retornado para {scope.label} na última coleta. Isso não confirma ausência de risco.</p>}{snapshot && !alerts.length && stale && <p>Nenhum aviso não expirado no cache para {scope.label}. Situação atual não verificada.</p>}</div>
+    <div className="official-alert-list">{alerts.map(alert => <article key={alert.id} className={`official-alert level-${alert.level}`}><header><h3>{alert.event}</h3><strong>{alert.severity}</strong></header><p>{Date.parse(alert.startsAt) > now ? 'Previsto' : 'Em vigor'}{stale ? ' · cópia em cache' : ''} · INMET #{alert.id}</p><p>De {formatAlertDate(alert.startsAt)} até {formatAlertDate(alert.endsAt)}</p>{alert.risks.map((risk, index) => <p key={index}>{risk}</p>)}{alert.instructions.length > 0 && <details><summary>Orientações do aviso</summary><ul>{alert.instructions.map((text, index) => <li key={index}>{text}</li>)}</ul></details>}<a href={alert.url} target="_blank" rel="noopener noreferrer">Consultar aviso na fonte de distribuição</a></article>)}</div>
+    <footer className="alerts-caption">Fonte emissora: <a href="https://avisos.inmet.gov.br/" target="_blank" rel="noopener noreferrer">INMET</a>. Dados via <a href="https://radarmeteorologico.com.br" target="_blank" rel="noopener noreferrer">RadarMeteorológico</a>. Sem notificações em segundo plano.</footer>
+  </section>;
+}
