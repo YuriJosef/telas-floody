@@ -39,3 +39,11 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Environment configuration (only the example is tracked)
+.env
+.env.*
+!.env.example
+
+# Local archives
+*.zip
