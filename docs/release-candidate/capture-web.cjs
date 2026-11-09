@@ -34,10 +34,12 @@ async function capture() {
         if(u.hostname==='radarmeteorologico.com.br')return json({alertas:[]});
         if(u.hostname==='router.project-osrm.org'){routeCalls++;return json(livePayload);}
         if(u.hostname==='server.arcgisonline.com'){satelliteBlocked=true;return r.abort();}
-        if(u.hostname==='nominatim.openstreetmap.org'){
-          if(u.pathname==='/reverse')return json({display_name:'Marco Zero (teste)'});
-          const q=u.searchParams.get('q');
-          return json(q==='Marco Zero, Recife'?[{display_name:q,lat:'-8.0631',lon:'-34.8711'}]:[]);
+        if(u.hostname==='api.geoapify.com'){
+          const q=u.searchParams.get('text');
+          const label=u.pathname.endsWith('/reverse')?'Marco Zero (teste)':q==='Marco Zero, Recife'?q:null;
+          return json({type:'FeatureCollection',features:label?[{
+            type:'Feature',geometry:{type:'Point',coordinates:[-34.8711,-8.0631]},properties:{formatted:label},
+          }]:[]});
         }
         if(u.hostname==='parallelum.com.br'){
           if(u.pathname.endsWith('/marcas'))return json([{nome:'Fiat',codigo:'21'},{nome:'Volkswagen',codigo:'59'}]);

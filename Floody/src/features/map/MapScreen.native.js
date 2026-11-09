@@ -1,3 +1,4 @@
+import GeoapifyAttribution from './components/GeoapifyAttribution.native';
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, useWindowDimensions } from 'react-native';
 import OpenStreetMap from './components/OpenStreetMap.native';
@@ -100,6 +101,7 @@ export default function MapScreen({ center }) {
       {gpsOrigin && <Text style={styles.muted}>Posição obtida para a origem. Sem acompanhamento em tempo real.</Text>}
       <Field label="Destino (rua e cidade)" value={destination} editable={!busy} onChangeText={text => { setDestination(text); setRoute(null); }} returnKeyType="search" onSubmitEditing={calculate} />
       <Button title={busy === 'route' ? 'Calculando…' : 'Calcular rota'} icon="route" disabled={Boolean(busy) || !destination.trim()} onPress={calculate} />
+      <GeoapifyAttribution />
       {error ? <Text accessibilityRole="alert" style={styles.text}>{error}</Text> : null}
       {route && <View style={{ gap: 8 }}>
         <Text accessibilityRole="header" style={styles.heading}>Rota calculada</Text>

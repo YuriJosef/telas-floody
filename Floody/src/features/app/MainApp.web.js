@@ -13,12 +13,11 @@ import ReportFormScreen from '../../features/reports/screens/ReportFormScreen';
 import ModerationScreen from '../../features/reports/screens/ModerationScreen';
 import { createVehicle, listFavoriteReportIds, listVehicles, setFavoriteReport } from '../../features/profile/services/userDataService';
 import { getCurrentPrecipitation, WEATHER_REFRESH_MS } from '../../features/dashboard/services/weatherService';
-import { resolveAddress, reverseGeocode, searchAddresses } from '../../features/map/services/geocodingService';
+import { GeocodingError, hasAddressQuery, resolveAddress, reverseGeocode } from '../../features/map/services/geocodingService';
 import { webRouteGeometry } from '../map/services/webRouteGeometry';
 import { getDrivingRoute } from '../../features/map/services/routingService';
 import { listVehicleMakes, listVehicleModels } from '../../features/profile/services/vehicleCatalogService';
 
-import { useDebouncedValue } from '../../hooks/useDebouncedValue';
 import { useLocation } from '../../hooks/useLocation';
 
 import InlineAlert from '../../components/feedback/InlineAlert';
@@ -60,6 +59,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [selectedReport, setSelectedReport] = useState(null);
   const [reportCoords, setReportCoords] = useState(null);
   const [loadingReportGPS, setLoadingReportGPS] = useState(false);
+  const [reportLocationNotice, setReportLocationNotice] = useState('');
   const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
   
   // Meteorologia Real e Monitoramento Global
@@ -69,9 +69,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [cidadeAtualNome, setCidadeAtualNome] = useState('Recife, PE');
   
   const [buscaCentralQuery, setBuscaCentralQuery] = useState('');
-  const [buscaCentralSuggestions, setBuscaCentralSuggestions] = useState([]);
-  const debouncedCentralQuery = useDebouncedValue(buscaCentralQuery, 700);
-  const selectedCentralAddressRef = useRef('');
+  const selectedCentralAddressRef = useRef(null);
 
   // Estados de Interação e Pesquisa Dinâmica de Qualquer Rua/Região
   const [expandedZoneId, setExpandedZoneId] = useState(null);
@@ -88,13 +86,9 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   // Rota e Navegação Ao Vivo
   const [origemQuery, setOrigemQuery] = useState('Recife, PE');
   const [origemCoords, setOrigemCoords] = useState([-8.05428, -34.8813]);
-  const [origemSuggestions, setOrigemSuggestions] = useState([]);
-  const debouncedOrigemQuery = useDebouncedValue(origemQuery, 700);
   
   const [destinoQuery, setDestinoQuery] = useState('');
   const [destinoCoords, setDestinoCoords] = useState(null);
-  const [destinoSuggestions, setDestinoSuggestions] = useState([]);
-  const debouncedDestinoQuery = useDebouncedValue(destinoQuery, 700);
   
   const [routeInfo, setRouteInfo] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
@@ -177,31 +171,47 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       .catch((error) => setReportError(error.message));
   };
 
-  const handleCentralSearch = async (e) => {
-    e.preventDefault();
-    if (!buscaCentralQuery || buscaCentralQuery.trim().length < 2) return;
+  const selectCentralAddress = ({ display_name: name, lat, lon }) => {
+    selectedCentralAddressRef.current = { name, coords: [lat, lon] };
+    setBuscaCentralQuery(name);
+    fetchWeatherForCoords(lat, lon, name);
+  };
+
+  const handleCentralSearch = async (event) => {
+    event.preventDefault();
+    if (loadingApi || !hasAddressQuery(buscaCentralQuery)) return;
     const query = buscaCentralQuery.trim();
+    const selected = selectedCentralAddressRef.current;
+    if (selected?.name === query) {
+      fetchWeatherForCoords(...selected.coords, query);
+      return;
+    }
     const requestId = ++weatherRequestRef.current;
     weatherLocationRef.current = null;
     setLoadingApi(true);
     setWeatherReading(null);
     setWeatherError('');
     setCidadeAtualNome(query);
-    const coords = await geocodeEnderecoDireto(query);
-    if (requestId !== weatherRequestRef.current) return;
-    if (!coords) {
-      setWeatherError('Local não encontrado ou consulta indisponível. Confira o endereço ou escolha um dos locais de Recife.');
-      setLoadingApi(false);
-    } else {
+    try {
+      const coords = await resolveAddress(query);
+      if (requestId !== weatherRequestRef.current) return;
+      if (!coords) {
+        setWeatherError('Local não encontrado. Confira o endereço ou escolha um dos locais de Recife.');
+        setLoadingApi(false);
+        return;
+      }
+      selectedCentralAddressRef.current = { name: query, coords };
       fetchWeatherForCoords(...coords, query);
+    } catch (error) {
+      if (requestId !== weatherRequestRef.current) return;
+      setWeatherError(error.message);
+      setLoadingApi(false);
     }
-    setBuscaCentralSuggestions([]);
   };
 
-  const handleCentralInputChange = (texto) => {
-    selectedCentralAddressRef.current = '';
-    setBuscaCentralQuery(texto);
-    if (texto.length < 3) setBuscaCentralSuggestions([]);
+  const handleCentralInputChange = (text) => {
+    selectedCentralAddressRef.current = null;
+    setBuscaCentralQuery(text);
   };
 
   useEffect(() => {
@@ -269,59 +279,6 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     return () => { active = false; };
   }, [marcaSelecionada]);
 
-  const searchAddress = async (query, setSuggestions, signal) => {
-    if (!query || query.length < 3) {
-      setSuggestions([]);
-      return;
-    }
-    try {
-      const data = await searchAddresses(query, signal);
-      if (!signal?.aborted) setSuggestions(data || []);
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        setSuggestions([]);
-      }
-    }
-  };
-
-  useEffect(() => {
-    if (debouncedCentralQuery === selectedCentralAddressRef.current) {
-      setBuscaCentralSuggestions([]);
-      return undefined;
-    }
-    const controller = new AbortController();
-    searchAddress(debouncedCentralQuery, setBuscaCentralSuggestions, controller.signal);
-    return () => controller.abort();
-  }, [debouncedCentralQuery]);
-
-  useEffect(() => {
-    if (origemCoords) {
-      setOrigemSuggestions([]);
-      return undefined;
-    }
-    const controller = new AbortController();
-    searchAddress(debouncedOrigemQuery, setOrigemSuggestions, controller.signal);
-    return () => controller.abort();
-  }, [debouncedOrigemQuery, origemCoords]);
-
-  useEffect(() => {
-    if (destinoCoords) {
-      setDestinoSuggestions([]);
-      return undefined;
-    }
-    const controller = new AbortController();
-    searchAddress(debouncedDestinoQuery, setDestinoSuggestions, controller.signal);
-    return () => controller.abort();
-  }, [debouncedDestinoQuery, destinoCoords]);
-
-  const geocodeEnderecoDireto = async (enderecoTexto) => {
-    try {
-      return await resolveAddress(enderecoTexto);
-    } catch {
-      return null;
-    }
-  };
-
   const handleUseGPS = () => {
     invalidateRoute();
     setReportError('');
@@ -334,7 +291,6 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       .then((coords) => {
         setOrigemCoords(coords);
         setOrigemQuery('Minha Localização Atual');
-        setOrigemSuggestions([]);
       })
       .catch((error) => setReportError(error.message))
       .finally(() => setLoadingGPS(false));
@@ -347,26 +303,15 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     setReportError('');
     setLoadingRoute(true);
 
-    let pOrigem = origemCoords;
-    let pDestino = destinoCoords;
-
-    if (!pOrigem && origemQuery) {
-      pOrigem = await geocodeEnderecoDireto(origemQuery);
-      if (pOrigem) setOrigemCoords(pOrigem);
-    }
-
-    if (!pDestino && destinoQuery) {
-      pDestino = await geocodeEnderecoDireto(destinoQuery);
-      if (pDestino) setDestinoCoords(pDestino);
-    }
-
-    if (!pOrigem || !pDestino) {
-      setReportError('Informe uma origem e um destino válidos para calcular a rota.');
-      setLoadingRoute(false);
-      return;
-    }
-
     try {
+      const pOrigem = origemCoords || await resolveAddress(origemQuery);
+      const pDestino = destinoCoords || (pOrigem && await resolveAddress(destinoQuery));
+      if (!pOrigem || !pDestino) {
+        setReportError('Informe uma origem e um destino válidos para calcular a rota.');
+        return;
+      }
+      setOrigemCoords(pOrigem);
+      setDestinoCoords(pDestino);
       const route = await getDrivingRoute(pOrigem, pDestino);
       const result = {
         positions: webRouteGeometry(route),
@@ -381,10 +326,10 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       getCurrentPrecipitation(...pDestino, { withDetails: true }).catch(() => null).then(chuvaDestino => {
         setRouteInfo(current => current === result ? { ...current, chuvaDestino } : current);
       });
-    } catch {
+    } catch (error) {
       setRouteInfo(null);
       setIsNavigating(false);
-      setReportError('Não foi possível obter uma rota viária. Tente novamente mais tarde.');
+      setReportError(error instanceof GeocodingError ? error.message : 'Não foi possível obter uma rota viária. Tente novamente mais tarde.');
     } finally {
       setLoadingRoute(false);
     }
@@ -461,6 +406,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const handleReportGPS = () => {
     setLoadingReportGPS(true);
+    setReportLocationNotice('');
     setReportCoords(null);
     setReportError('');
     getExactPosition(getCurrentLocation)
@@ -468,8 +414,8 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
         let address = null;
         try {
           address = await reverseGeocode(coords[0], coords[1]);
-        } catch {
-          address = null;
+        } catch (error) {
+          setReportLocationNotice(error.message + ' As coordenadas continuam disponíveis para o relato.');
         }
         setFormReporte((current) => ({
           ...current,
@@ -506,12 +452,12 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
         <p className="local-notice">Modo local · Relatos e veículos ficam neste dispositivo.</p>
         {showReportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
-          <DashboardScreen weatherError={weatherError} buscaCentralQuery={buscaCentralQuery} buscaCentralSuggestions={buscaCentralSuggestions} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} fetchWeatherForCoords={fetchWeatherForCoords} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} selectedCentralAddressRef={selectedCentralAddressRef} setBuscaCentralQuery={setBuscaCentralQuery} setBuscaCentralSuggestions={setBuscaCentralSuggestions} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
+          <DashboardScreen weatherError={weatherError} buscaCentralQuery={buscaCentralQuery} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} centralAddressSelected={selectedCentralAddressRef.current?.name === buscaCentralQuery} onSelectAddress={selectCentralAddress} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
         )}
 
         {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS */}
         {activeTab === 'mapa' && (
-          <MapScreen activeTab={activeTab} defaultCenter={defaultCenter} destinoCoords={destinoCoords} destinoQuery={destinoQuery} destinoSuggestions={destinoSuggestions} handleBuscarRota={handleBuscarRota} handleCancelRoute={handleCancelRoute} invalidateRoute={invalidateRoute} handleUseGPS={handleUseGPS} isMounted={isMounted} isNavigating={isNavigating} loadingGPS={loadingGPS} loadingRoute={loadingRoute} mapTilesUnavailable={mapTilesUnavailable} mapView={mapView} origemCoords={origemCoords} origemQuery={origemQuery} origemSuggestions={origemSuggestions} preferredMapTileUrl={preferredMapTileUrl} reportes={reportes} routeInfo={routeInfo} routePanelCollapsed={routePanelCollapsed} setDestinoCoords={setDestinoCoords} setDestinoQuery={setDestinoQuery} setDestinoSuggestions={setDestinoSuggestions} setMapTilesUnavailable={setMapTilesUnavailable} setMapView={setMapView} setOrigemCoords={setOrigemCoords} setOrigemQuery={setOrigemQuery} setOrigemSuggestions={setOrigemSuggestions} setRoutePanelCollapsed={setRoutePanelCollapsed} theme={theme} />
+          <MapScreen activeTab={activeTab} defaultCenter={defaultCenter} destinoCoords={destinoCoords} destinoQuery={destinoQuery} handleBuscarRota={handleBuscarRota} handleCancelRoute={handleCancelRoute} invalidateRoute={invalidateRoute} handleUseGPS={handleUseGPS} isMounted={isMounted} isNavigating={isNavigating} loadingGPS={loadingGPS} loadingRoute={loadingRoute} mapTilesUnavailable={mapTilesUnavailable} mapView={mapView} origemCoords={origemCoords} origemQuery={origemQuery} preferredMapTileUrl={preferredMapTileUrl} reportes={reportes} routeInfo={routeInfo} routePanelCollapsed={routePanelCollapsed} setDestinoCoords={setDestinoCoords} setDestinoQuery={setDestinoQuery} setMapTilesUnavailable={setMapTilesUnavailable} setMapView={setMapView} setOrigemCoords={setOrigemCoords} setOrigemQuery={setOrigemQuery} setRoutePanelCollapsed={setRoutePanelCollapsed} theme={theme} />
         )}
 
         {/* GARAGEM FIPE */}
@@ -529,6 +475,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
             }}
             coords={reportCoords}
             loadingGPS={loadingReportGPS}
+            locationNotice={reportLocationNotice}
             onGPS={handleReportGPS}
             onSubmit={handleSaveReporte}
             icons={Icons}

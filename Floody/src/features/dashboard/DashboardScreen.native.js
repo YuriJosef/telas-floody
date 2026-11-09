@@ -1,3 +1,4 @@
+import GeoapifyAttribution from '../map/components/GeoapifyAttribution.native';
 import MaterialIcon from '../../components/native/MaterialIcon.native';
 import OfficialAlertsPanel from '../alerts/components/OfficialAlertsPanel.native';
 import React, { useEffect, useRef, useState } from 'react';
@@ -38,10 +39,14 @@ export default function DashboardScreen({ onMap }) {
     const revision = ++searchRevision.current;
     setArea({ name, coords: null });
     setWeather({ loading: true });
-    const coords = await resolveAddress(name).catch(() => null);
-    if (revision !== searchRevision.current) return;
-    if (coords) setArea({ name, coords });
-    else setWeather({ error: 'Local não encontrado ou consulta indisponível. Confira o endereço ou escolha um local de Recife.' });
+    try {
+      const coords = await resolveAddress(name);
+      if (revision !== searchRevision.current) return;
+      if (coords) setArea({ name, coords });
+      else setWeather({ error: 'Local não encontrado. Confira o endereço ou escolha um local de Recife.' });
+    } catch (error) {
+      if (revision === searchRevision.current) setWeather({ error: error.message });
+    }
   }
   const loading = weather.loading || Boolean(area.coords && weather.area !== area);
   const hasReading = !loading && !weather.error && weather.rain != null;
@@ -70,6 +75,7 @@ export default function DashboardScreen({ onMap }) {
       <Text style={styles.muted}>Estimativa de chuva. Não mede alagamentos nem indica passagem segura.</Text>
       <Field label="Consultar outro local" placeholder="Rua, bairro e cidade" value={query} onChangeText={setQuery} returnKeyType="search" onSubmitEditing={search} />
       <Button title="Consultar chuva" icon="search" onPress={search} disabled={!query.trim() || loading} />
+      <GeoapifyAttribution />
       <Text style={styles.label}>Locais de Recife</Text>
       <View style={{ gap: 6 }}>{[0, 2].map(start =>
         <View key={start} style={{ flexDirection: 'row', gap: 6 }}>

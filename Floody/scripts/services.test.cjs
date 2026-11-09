@@ -134,22 +134,94 @@ test('native map bridge keeps local report labels inert', () => {
  assert.match(buildMapDocument([-8, -34]), /label\.textContent=marker\.label/);
 });
 
-test('geocoding rejects missing and out-of-range coordinates', async () => {
- const { resolveAddress } = load('src/features/map/services/geocodingService.js');
+const geo = load('src/features/map/services/geocodingService.js');
+const geoEnv = load('src/config/env.js').env;
+const point = (coordinates, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates }, properties });
+const collection = (...features) => ({ type: 'FeatureCollection', features });
+
+async function withGeoapify(fetch, run, key = 'fixture-key') {
  const originalFetch = globalThis.fetch;
- let matches = [
-  { display_name: 'Missing latitude', lat: null, lon: '-34' },
-  { display_name: 'Blank longitude', lat: '-8', lon: ' ' },
-  { display_name: 'Out of range', lat: '91', lon: '-34' },
- ];
- globalThis.fetch = async () => new Response(JSON.stringify(matches));
- try {
-  assert.equal(await resolveAddress('Local inválido'), null);
-  matches = [{ display_name: 'Recife', lat: '-8', lon: '-34' }];
-  assert.deepEqual(await resolveAddress('Recife'), [-8, -34]);
- } finally {
-  globalThis.fetch = originalFetch;
+ const originalKey = geoEnv.geoapifyApiKey;
+ globalThis.fetch = fetch;
+ geoEnv.geoapifyApiKey = key;
+ try { await run(); }
+ finally { globalThis.fetch = originalFetch; geoEnv.geoapifyApiKey = originalKey; }
+}
+
+test('Geoapify autocomplete filters Brazil, biases Recife, caps results and normalizes addresses', async () => {
+ let calls = 0;
+ await withGeoapify(async url => {
+  calls++;
+  const request = new URL(url);
+  assert.equal(request.origin + request.pathname, 'https://api.geoapify.com/v1/geocode/autocomplete');
+  for (const [key, value] of Object.entries({ apiKey: 'fixture-key', lang: 'pt', filter: 'countrycode:br',
+   bias: 'proximity:-34.8813,-8.05428', limit: '5', text: 'Rua São Paulo', format: 'geojson' })) {
+   assert.equal(request.searchParams.get(key), value);
+  }
+  const good = point([-46.63, -23.55], { formatted: 'Rua São Paulo, 42', street: 'Rua São Paulo', housenumber: '42',
+   suburb: 'Centro', city: 'São Paulo', state: 'São Paulo', country: 'Brasil', place_id: 'fixture-place' });
+  return Response.json(collection(point([null, 0], { formatted: 'Inválido' }), point([0, 91], { formatted: 'Inválido' }),
+   good, ...Array.from({ length: 6 }, () => point([-46.6, -23.5], { address_line1: 'Outra rua', address_line2: 'São Paulo' }))));
+ }, async () => {
+  assert.deepEqual(await geo.searchAddresses(' A. 1 '), []);
+  assert.equal(calls, 0);
+  const result = await geo.searchAddresses('  Rua  São Paulo ');
+  assert.equal(result.length, 5);
+  assert.deepEqual(result[0], { display_name: 'Rua São Paulo, 42', lat: -23.55, lon: -46.63,
+   street: 'Rua São Paulo', houseNumber: '42', neighborhood: 'Centro', city: 'São Paulo', state: 'São Paulo', country: 'Brasil', id: 'fixture-place' });
+  assert.equal(result[1].display_name, 'Outra rua, São Paulo');
+ });
+});
+
+test('Geoapify separates forward and reverse requests and accepts an empty result', async () => {
+ const requests = [];
+ await withGeoapify(async url => {
+  const request = new URL(url);
+  requests.push(request);
+  return Response.json(request.searchParams.get('text') === 'Local inexistente' ? collection() :
+   collection(point([-34.9, -8.1], { formatted: 'Recife, PE' })));
+ }, async () => {
+  assert.deepEqual(await geo.resolveAddress('Recife'), [-8.1, -34.9]);
+  assert.equal(await geo.resolveAddress('Local inexistente'), null);
+  assert.equal(await geo.reverseGeocode(-8.1, -34.9), 'Recife, PE');
+  assert.equal(requests[0].pathname, '/v1/geocode/search');
+  assert.equal(requests[0].searchParams.get('limit'), '1');
+  assert.equal(requests[2].pathname, '/v1/geocode/reverse');
+  assert.equal(requests[2].searchParams.get('lat'), '-8.1');
+  assert.equal(requests[2].searchParams.get('lon'), '-34.9');
+  await assert.rejects(geo.reverseGeocode(91, -34.9), /Coordenadas inválidas/);
+  assert.equal(requests.length, 3);
+ });
+});
+
+test('Geoapify errors distinguish key, quota, and invalid provider data without leaking a URL', async () => {
+ await withGeoapify(() => assert.fail('Missing key must not fetch'), async () => {
+  await assert.rejects(geo.searchAddresses('Recife'), /não configurada/);
+ }, '');
+ for (const [status, message] of [[401, /recusou/], [403, /recusou/], [429, /Limite/], [500, /indisponível/]]) {
+  await withGeoapify(async () => new Response(null, { status }), async () => {
+   await assert.rejects(geo.searchAddresses('Recife'), message);
+  });
  }
+ await withGeoapify(async url => { throw new Error(url); }, async () => {
+  await assert.rejects(geo.searchAddresses('Recife'), error => /indisponível/.test(error.message) && !error.message.includes('fixture-key'));
+ });
+ for (const data of [{ features: [] }, collection(point([-34, 91], { formatted: 'Inválido' }))]) {
+  await withGeoapify(async () => Response.json(data), async () => {
+   await assert.rejects(geo.searchAddresses('Recife'), /Resposta de endereços inválida/);
+  });
+ }
+});
+
+test('Geoapify autocomplete forwards cancellation to fetch', async () => {
+ const controller = new AbortController();
+ await withGeoapify(async (_url, { signal }) => new Promise((_resolve, reject) => {
+  signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+ }), async () => {
+  const pending = geo.searchAddresses('Recife', controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /cancelada/);
+ });
 });
 
 test('web route geometry converts GeoJSON to Leaflet order and rejects invisible routes', () => {

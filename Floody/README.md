@@ -6,12 +6,19 @@ Aplicação Expo SDK 58 para web, Android e iOS. A versão web utiliza React/Lea
 
 Requer Node.js 22.13+ na linha 22 ou 24.3+ na linha 24 (Node 24.18 utilizado na validação).
 
-```sh
-npm ci
-cp .env.example .env
-npm run web
+```powershell
+git clone --branch feature/floody-2.0-m3-expressive --single-branch https://github.com/YuriJosef/telas-floody.git
+Set-Location telas-floody/Floody
+npm.cmd ci
+if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
+```
+
+Em um clone existente, estando na branch de trabalho, use `git pull --ff-only`. Abra `Floody/.env.local` no editor e preencha `EXPO_PUBLIC_GEOAPIFY_API_KEY` com a chave local do projeto Geoapify. Reinicie o Expo após editar o arquivo.
+
+```powershell
+npm.cmd run web
 # Ou, para testar no Expo Go em um dispositivo:
-npm start
+npm.cmd start
 ```
 
 O dispositivo precisa de uma versão do Expo Go compatível com o SDK 58. `npm run android` e `npm run ios` iniciam o ambiente Expo; não geram APK/IPA. A validação desta refatoração exporta bundles JavaScript/Hermes, sem compilar binários nativos.
@@ -34,15 +41,17 @@ O modo local não exige senha. Relatos, favoritos e veículos ficam no navegador
 
 Relatos novos permanecem pendentes e não aparecem como ocorrências aprovadas. Não há publicação comunitária, autenticação real ou administração. A função de aprovação bloqueia alterações no cliente; um backend com autenticação e autorização será necessário para essas funções.
 
-Os indicadores aleatórios e as camadas demonstrativas foram removidos. Os painéis web e nativo mostram precipitação consultada e avisos reais do INMET distribuídos pelo RadarMeteorológico. As telas nativas oferecem planejamento de rota, cadastro manual de veículos e relatos locais; o catálogo FIPE está disponível somente na web. Rotas OSRM não consideram alagamentos e não oferecem orientação curva a curva. Quando o cálculo falha, nenhuma linha reta é apresentada como rota viária.
+Os painéis web e nativo mostram precipitação modelada e avisos do INMET distribuídos pelo RadarMeteorológico. As telas nativas oferecem planejamento de rota, cadastro de veículos com opção de consulta ao catálogo e relatos locais. Rotas OSRM não consideram alagamentos e não oferecem orientação curva a curva. Quando o cálculo falha, nenhuma linha reta é apresentada como rota viária.
 
-Os serviços externos configurados são Open-Meteo (chuva), Nominatim (endereços), OSRM (rotas), Parallelum (catálogo veicular web) e provedores de mapas. Buscas e coordenadas necessárias às consultas são enviadas a esses provedores. Os endpoints públicos de demonstração têm políticas e limites próprios; configure provedores apropriados antes de disponibilizar o app em escala.
+Os serviços externos configurados são Open-Meteo (chuva), Geoapify (endereços), OSRM (rotas), Parallelum (catálogo veicular) e provedores de mapas. Buscas e coordenadas necessárias às consultas são enviadas a esses provedores. Consulte a [revisão de provedores](../docs/release-candidate/PROVIDERS.md) antes de disponibilizar o app em escala.
 
 ## Ambiente e chaves
 
 `.env` e variantes estão no `.gitignore`; `.env.example` contém apenas configuração de exemplo. Não foram identificadas credenciais nos arquivos de origem analisados.
 
-**`EXPO_PUBLIC_*` é incorporado no bundle e pode ser lido pelo usuário.** Use somente URLs e configurações públicas. Senhas, chaves privadas e credenciais privilegiadas devem permanecer no backend, nunca no app ou em variáveis públicas.
+**`EXPO_PUBLIC_*` é incorporado no bundle e pode ser lido pelo usuário.** O arquivo ignorado evita publicar a chave pelo Git. Para web, restrinja a chave Geoapify aos referrers ou origens do desenvolvimento, como `http://localhost:8081` na porta usada. Para Expo Go ou React Native, use uma chave de demonstração dedicada e de baixo privilégio. A restrição por origem do navegador não autentica o app nativo. Use restrição por IP quando houver saída previsível e teste a configuração em cada plataforma. Acompanhe a cota e revogue a chave de demonstração quando terminar. Chaves no mesmo projeto compartilham a cota. Nunca use chaves privilegiadas no bundle. [Restrições Geoapify](https://myprojects.geoapify.com/help/api-keys/)
+
+A web oferece sugestões de endereços no painel e nos campos de origem e destino. O nativo consulta os endereços ao confirmar o painel ou calcular a rota. O GPS continua disponível para rotas e relatos. Se a consulta reversa falhar, o relato pode usar as coordenadas obtidas. Sem chave, a busca de endereços informa a configuração ausente. Os atalhos de Recife, os avisos e as funções locais independem dessa chave.
 
 Os mapas de Android e iOS usam Leaflet em uma WebView com tiles OpenStreetMap, sem Google Maps e sem chave de API. A biblioteca Leaflet e seu CSS são empacotados localmente por `npm run map:assets` (também executado após instalar dependências). A licença acompanha o código gerado. Os tiles exigem internet e respeitam cache HTTP; não há download em lote ou mapa offline. O app se identifica como `Floody/1.0`, mostra a atribuição ao OpenStreetMap e permite trocar o endpoint HTTPS por `EXPO_PUBLIC_MAP_TILES_LIGHT`. O serviço público de tiles é gratuito para uso conforme sua política, tem capacidade limitada e não oferece SLA: https://operations.osmfoundation.org/policies/tiles/ . A WebView suporta pan, zoom, origem, destino e traçado OSRM; a localização é obtida pelo Expo e passada ao mapa, sem pedir acesso GPS à página. Não foi gerado APK nesta tarefa.
 

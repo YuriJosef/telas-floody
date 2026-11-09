@@ -1,5 +1,6 @@
+import { GeoapifyAttribution } from '../../map/components/AddressAutocomplete.web';
 import React, { useState } from 'react';
-export default function ReportFormScreen({ form, onChange, coords, loadingGPS, onGPS, onSubmit }) {
+export default function ReportFormScreen({ form, onChange, coords, loadingGPS, locationNotice, onGPS, onSubmit }) {
   const [sending, setSending] = useState(false);
   const change = (field, value) => onChange({ ...form, [field]: value }, field);
   return <section className="scrollable-tab form-page">
@@ -10,6 +11,8 @@ export default function ReportFormScreen({ form, onChange, coords, loadingGPS, o
         <button type="button" className="btn-action-secondary" disabled={loadingGPS} onClick={onGPS}>{loadingGPS ? 'Obtendo localização…' : 'Usar minha localização'}</button>
         <p className="caption" role="status">{coords ? 'Posição obtida para este relato.' : 'Aguardando uma posição do GPS para salvar.'}</p>
         <label className="input-group">Local<input required aria-describedby="report-location-help" value={form.local} maxLength={500} onChange={e => change('local', e.target.value)} /></label>
+        {locationNotice && <p className="caption" role="status">{locationNotice}</p>}
+        <GeoapifyAttribution />
       </div>
       <label className="input-group">Descrição<textarea required rows={4} maxLength={2000} placeholder="Descreva o que observou no local" value={form.descricao} onChange={e => change('descricao', e.target.value)} /></label>
       <button className="btn-primary" disabled={!coords || loadingGPS || sending}>{sending ? 'Salvando…' : 'Salvar relato local'}</button>

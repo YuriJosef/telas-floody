@@ -14,8 +14,10 @@ const shortcuts = [
  ['Centro', '-8.0607', '-34.8811'],
 ];
 const endpoints = {
+ 'Origem de teste': [-34.8813, -8.05428],
  'Destino de teste A': [-34.8711, -8.0631],
  'Destino de teste B': [-34.8964, -8.1191],
+ 'Endereço antigo': [-34.92, -8.10],
 };
 
 async function run() {
@@ -30,6 +32,9 @@ async function run() {
   let weatherMode = 'valid';
   let delayDestinationWeather = false;
   const weatherCalls = [];
+  const geocodeCalls = [];
+  const routeCalls = [];
+  let legacyCalls = 0;
   let liveRouteResponse;
   if (live) page.on('response', response => {
    if (new URL(response.url()).hostname === 'router.project-osrm.org') liveRouteResponse = response;
@@ -52,11 +57,26 @@ async function run() {
     } });
    }
    if (url.hostname === 'nominatim.openstreetmap.org') {
-    const name = url.searchParams.get('q');
+    legacyCalls++;
+    return route.abort();
+   }
+   if (url.hostname === 'api.geoapify.com') {
+    const name = url.searchParams.get('text');
+    const operation = url.pathname.split('/').at(-1);
+    geocodeCalls.push({ operation, name });
+    assert.equal(url.searchParams.get('filter'), 'countrycode:br');
+    assert.equal(url.searchParams.get('bias'), 'proximity:-34.8813,-8.05428');
+    assert.equal(url.searchParams.get('lang'), 'pt');
+    assert.equal(url.searchParams.get('limit'), operation === 'autocomplete' ? '5' : '1');
+    if (name === 'Cota esgotada') return route.fulfill({ status: 429 });
+    if (name === 'Endereço antigo') await new Promise(resolve => setTimeout(resolve, 1100));
     const coords = endpoints[name];
-    return json(coords ? [{ display_name: name, lon: coords[0], lat: coords[1] }] : []);
+    return json({ type: 'FeatureCollection', features: coords ? [{
+     type: 'Feature', geometry: { type: 'Point', coordinates: coords }, properties: { formatted: name },
+    }] : [] });
    }
    if (url.hostname === 'router.project-osrm.org') {
+    routeCalls.push(url.pathname.split('/').at(-1));
     if (live) return route.continue();
     if (routeMode === 'failed') return route.fulfill({ status: 503 });
     const [start, end] = url.pathname.split('/').at(-1).split(';').map(point => point.split(',').map(Number));
@@ -122,17 +142,51 @@ async function run() {
    assert.equal(await reading.locator('.rain-value').count(), 0);
    weatherMode = 'valid';
    const beforeInvalid = weatherCalls.length;
-   const search = page.getByRole('textbox', { name: 'Buscar endereço' });
+   const search = page.getByRole('combobox', { name: 'Buscar endereço' });
    await search.fill('Local inexistente de teste');
    await search.press('Enter');
    await reading.getByText(/Local não encontrado/).waitFor();
    assert.equal(weatherCalls.length, beforeInvalid);
+   for (const [width, theme, name] of [[320, 'claro', 'Destino de teste A'], [390, 'escuro', 'Destino de teste B'], [1366, 'claro', 'Destino de teste A']]) {
+    await page.setViewportSize({ width, height: 850 });
+    const toggle = button('Ativar tema ' + theme);
+    if (await toggle.isVisible()) await toggle.click();
+    const count = geocodeCalls.length;
+    await search.fill('  R. ');
+    await page.waitForTimeout(710);
+    assert.equal(geocodeCalls.length, count);
+    await search.fill(name);
+    await page.getByRole('option', { name }).waitFor();
+    await search.press('Escape');
+    assert.equal(await search.getAttribute('aria-expanded'), 'false');
+    await search.press('ArrowDown');
+    await page.getByRole('option', { name }).waitFor();
+    await search.press('ArrowDown');
+    assert(await search.getAttribute('aria-activedescendant'));
+    await search.press('Enter');
+    await reading.getByText(name, { exact: true }).waitFor();
+    await reading.locator('time').waitFor();
+    assert.equal(await search.getAttribute('aria-expanded'), 'false');
+    assert.equal(await search.evaluate(e => e === document.activeElement), true);
+    assert.deepEqual(geocodeCalls.slice(count), [{ operation: 'autocomplete', name }]);
+    assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+   }
+   await search.fill('Endereço antigo');
+   await page.waitForRequest(request => new URL(request.url()).searchParams.get('text') === 'Endereço antigo');
+   await search.fill('Destino de teste B');
+   await page.getByRole('option', { name: 'Destino de teste B' }).waitFor();
+   await page.waitForTimeout(1200);
+   assert.equal(await page.getByRole('option', { name: 'Endereço antigo' }).count(), 0);
+   await search.fill('Cota esgotada');
+   await page.getByText(/Limite de consultas de endereço atingido/).waitFor();
+   await search.press('Enter');
+   await reading.getByRole('alert').filter({ hasText: /Limite de consultas/ }).waitFor();
   }
 
   await button('Mapa').click();
   const planner = button('Planejar rota');
   if (await planner.getAttribute('aria-expanded') === 'false') await planner.click();
-  const destination = page.getByRole('textbox', { name: 'Endereço de destino' });
+  const destination = page.getByRole('combobox', { name: 'Endereço de destino' });
   const line = page.locator('.floody-route-line');
   async function plan(name) {
    await destination.fill(name);
@@ -155,7 +209,26 @@ async function run() {
    return shape.d;
   }
   delayDestinationWeather = !live;
-  await plan('Destino de teste A');
+  if (live) {
+   await plan('Destino de teste A');
+  } else {
+   const origin = page.getByRole('combobox', { name: 'Endereço de origem' });
+   const count = geocodeCalls.length;
+   await origin.fill('Origem de teste');
+   await page.getByRole('option', { name: 'Origem de teste' }).click();
+   await destination.fill('Destino de teste A');
+   await page.getByRole('option', { name: 'Destino de teste A' }).waitFor();
+   await destination.press('ArrowDown');
+   await destination.press('Enter');
+   assert.equal(await page.getByRole('listbox').count(), 0);
+   await destination.press('Enter');
+   await page.getByRole('heading', { name: 'Rota calculada' }).waitFor();
+   assert.deepEqual(geocodeCalls.slice(count), [
+    { operation: 'autocomplete', name: 'Origem de teste' },
+    { operation: 'autocomplete', name: 'Destino de teste A' },
+   ]);
+   assert.equal(routeCalls.at(-1), '-34.8813,-8.05428;-34.8711,-8.0631');
+  }
   const first = await visibleRoute();
   if (live) {
    assert(liveRouteResponse?.ok(), 'Live OSRM response must succeed');
@@ -182,6 +255,7 @@ async function run() {
    console.log('Deterministic route, camera bounds, Recife layout, refresh and precipitation labels passed.');
   }
   assert.deepEqual(errors, []);
+  assert.equal(legacyCalls, 0, 'No requests to the retired public geocoder');
  } finally {
   await browser.close();
  }

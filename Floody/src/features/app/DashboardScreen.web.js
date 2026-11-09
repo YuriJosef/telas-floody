@@ -1,9 +1,10 @@
+import AddressAutocomplete, { GeoapifyAttribution } from '../map/components/AddressAutocomplete.web';
 import OfficialAlertsPanel from '../alerts/components/OfficialAlertsPanel.web';
 import { formatDateTime } from '../../utils/formatters';
 import { precipitationDetails } from '../dashboard/services/weatherService';
 import Icons from '../../components/icons/Icons';
 
-export default function DashboardScreen({ weatherError, buscaCentralQuery, buscaCentralSuggestions, cidadeAtualNome, expandedZoneId, favoritos, fetchWeatherForCoords, filtroApenasFavoritos, filtroTextoZona, handleCentralInputChange, handleCentralSearch, loadingApi, nearbyAreas, weatherReading, reportLoading, reportesExibidos, selectedCentralAddressRef, setBuscaCentralQuery, setBuscaCentralSuggestions, setExpandedZoneId, setFiltroApenasFavoritos, setFiltroTextoZona, toggleFavorito }) {
+export default function DashboardScreen({ weatherError, buscaCentralQuery, cidadeAtualNome, expandedZoneId, favoritos, filtroApenasFavoritos, filtroTextoZona, handleCentralInputChange, handleCentralSearch, loadingApi, nearbyAreas, weatherReading, reportLoading, reportesExibidos, centralAddressSelected, onSelectAddress, setExpandedZoneId, setFiltroApenasFavoritos, setFiltroTextoZona, toggleFavorito }) {
   const details = weatherReading && precipitationDetails(weatherReading);
   return (
     <div className="scrollable-tab dashboard">
@@ -32,26 +33,14 @@ export default function DashboardScreen({ weatherError, buscaCentralQuery, busca
           </div>
           <p className="caption">Estimativa do Open-Meteo. Não mede alagamentos nem indica passagem segura.</p>
           <form className="stack" onSubmit={handleCentralSearch}>
-            <label className="input-group">Consultar outro local
-              <input aria-label="Buscar endereço" placeholder="Rua, bairro e cidade" value={buscaCentralQuery} onChange={e => handleCentralInputChange(e.target.value)} />
-            </label>
-            {buscaCentralSuggestions.length > 0 && <div className="suggestions-dropdown" aria-label="Endereços encontrados">
-              {buscaCentralSuggestions.map((s, index) => <button type="button" className="suggestion-item" key={index} onClick={() => {
-                selectedCentralAddressRef.current = s.display_name;
-                setBuscaCentralQuery(s.display_name);
-                fetchWeatherForCoords(Number(s.lat), Number(s.lon), s.display_name);
-                setBuscaCentralSuggestions([]);
-              }}>{s.display_name}</button>)}
-            </div>}
+            <AddressAutocomplete label="Consultar outro local" inputLabel="Buscar endereço" placeholder="Rua, bairro e cidade"
+              value={buscaCentralQuery} selected={centralAddressSelected} readOnly={loadingApi}
+              onChange={handleCentralInputChange} onSelect={onSelectAddress} />
             <button className="btn-primary" disabled={loadingApi}><Icons.Search /> Consultar chuva</button>
+            <GeoapifyAttribution />
           </form>
           <div><h3>Locais de Recife</h3><div className="regional-area-list" role="group" aria-label="Selecionar local de Recife">
-            {nearbyAreas.map(area => <button key={area.name} className="regional-area-button" aria-pressed={cidadeAtualNome === area.name} onClick={() => {
-              selectedCentralAddressRef.current = area.name;
-              setBuscaCentralQuery(area.name);
-              fetchWeatherForCoords(...area.coords, area.name);
-              setBuscaCentralSuggestions([]);
-            }}>{area.name}</button>)}
+            {nearbyAreas.map(area => <button key={area.name} className="regional-area-button" aria-pressed={cidadeAtualNome === area.name} onClick={() => onSelectAddress({ display_name: area.name, lat: area.coords[0], lon: area.coords[1] })}>{area.name}</button>)}
           </div></div>
         </section>
       </div>

@@ -12,7 +12,7 @@ export async function requestJson(url, signal, { cache } = {}) {
   const timeout = setTimeout(abort, 12000);
   try {
     const response = await fetch(buildUrl(url), { signal: controller.signal, cache, headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error(`Serviço externo respondeu com erro (${response.status}).`);
+    if (!response.ok) throw Object.assign(new Error(`Serviço externo respondeu com erro (${response.status}).`), { status: response.status });
     return await response.json();
   } finally { clearTimeout(timeout); signal?.removeEventListener('abort', abort); }
 }
