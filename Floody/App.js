@@ -192,6 +192,8 @@ const DEMO_STREET_ROADS = [
   },
 ];
 
+const OPEN_STREET_MAP_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+
 function normalizeText(value) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
 }
@@ -287,6 +289,36 @@ function MapViewSizeUpdater({ activeTab, mapView }) {
   return null;
 }
 
+function FocusedAreaMarker({ area, reports, demoRain, realRain }) {
+  const map = useMap();
+  const markerRef = useRef(null);
+  const indicators = area
+    ? getAreaIndicators(area.name, area.coords, reports, demoRain, realRain)
+    : null;
+
+  useEffect(() => {
+    if (!area || !markerRef.current) return;
+    map.setView(area.coords, 16, { animate: false });
+    markerRef.current.openPopup();
+  }, [area, map]);
+
+  if (!area) return null;
+
+  return (
+    <Marker ref={markerRef} position={area.coords}>
+      <Popup>
+        <strong>{area.name}, Recife/PE</strong><br />
+        Indicadores estimados e relatos aprovados próximos.<br />
+        Risco estimado de alagamento: {indicators.alerts[0].value}.<br />
+        Chuva {realRain == null ? 'estimada' : 'atual'}: {indicators.rain.toFixed(1)} mm/h.<br />
+        Retenção estimada: {indicators.alerts[1].value}.<br />
+        Obras / interdições estimadas: {indicators.alerts[2].value}.<br />
+        Buracos / perigos: {indicators.alerts[3].value}.
+      </Popup>
+    </Marker>
+  );
+}
+
 function getExactPosition(getCurrentLocation) {
   if (typeof navigator !== 'undefined' && navigator.geolocation?.getCurrentPosition) {
     return new Promise((resolve, reject) => {
@@ -334,7 +366,9 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
   
   // Mapa de Calor Toggle
   const [mapView, setMapView] = useState('flood');
-  const [mapTilesUnavailable, setMapTilesUnavailable] = useState(false);
+  const [focusedArea, setFocusedArea] = useState(null);
+  const [mapTileFallbackActive, setMapTileFallbackActive] = useState(false);
+  const [mapTileFallbackFailed, setMapTileFallbackFailed] = useState(false);
   const [routePanelCollapsed, setRoutePanelCollapsed] = useState(false);
   
   // Rota e Navegação Ao Vivo
@@ -600,6 +634,15 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
       .finally(() => setLoadingGPS(false));
   };
 
+  const handleFocusArea = (area) => {
+    setFocusedArea(area);
+    setActiveTab('mapa');
+  };
+
+  const handleFocusCurrentArea = () => {
+    handleFocusArea({ name: cidadeAtualNome, coords: currentCoords });
+  };
+
   const handleBuscarRota = async (e) => {
     e.preventDefault();
     setLoadingRoute(true);
@@ -623,6 +666,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
       return;
     }
 
+    setFocusedArea(null);
     try {
       const route = await getDrivingRoute(pOrigem, pDestino);
       const leafCoords = route.geometry.coordinates.map(([longitude, latitude]) => [latitude, longitude]);
@@ -748,6 +792,17 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     ? env.mapTilesDark
     : env.mapTilesLight;
   const preferredMapTileUrl = mapView === 'satellite' ? env.mapTilesSatellite : mapTileUrl;
+  const fallbackMapTileUrl = mapView === 'satellite'
+    ? mapTileUrl
+    : OPEN_STREET_MAP_TILE_URL;
+  const activeMapTileUrl = mapTileFallbackActive ? fallbackMapTileUrl : preferredMapTileUrl;
+  const mapTileAttribution = mapTileFallbackActive
+    ? mapView === 'satellite'
+      ? '&copy; OpenStreetMap contributors &copy; CARTO'
+      : '&copy; OpenStreetMap contributors'
+    : mapView === 'satellite'
+      ? 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community'
+      : '&copy; OpenStreetMap contributors &copy; CARTO';
   const areaIndicators = getAreaIndicators(cidadeAtualNome, currentCoords, reportes, demoRain, realRain);
   const nearbyAreas = [...LOCAL_AREA_PROFILES].sort((first, second) =>
     Math.hypot(first.coords[0] - currentCoords[0], first.coords[1] - currentCoords[1])
@@ -759,8 +814,18 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
     && !normalizedReportError.startsWith('servico externo respondeu com erro');
 
   useEffect(() => {
-    setMapTilesUnavailable(false);
+    setMapTileFallbackActive(false);
+    setMapTileFallbackFailed(false);
   }, [mapView, theme]);
+
+  const handleMapTileError = (event) => {
+    if (event.tile?.style) event.tile.style.visibility = 'hidden';
+    if (mapTileFallbackActive) {
+      setMapTileFallbackFailed(true);
+    } else {
+      setMapTileFallbackActive(true);
+    }
+  };
 
   const termoPesquisado = filtroTextoZona.trim().toLocaleLowerCase();
   const reportesExibidos = reportes
@@ -886,6 +951,7 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                       selectedCentralAddressRef.current = area.name;
                       setBuscaCentralQuery(area.name);
                       fetchWeatherForCoords(area.coords[0], area.coords[1], area.name);
+                      handleFocusArea(area);
                       setBuscaCentralSuggestions([]);
                     }}
                   >
@@ -905,38 +971,44 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
               </div>
               <div className="area-alert-grid">
                 {areaIndicators.alerts.map((alert) => (
-                  <div className="area-alert-item" key={alert.label}>
+                  <button
+                    type="button"
+                    className="area-alert-item"
+                    key={alert.label}
+                    onClick={handleFocusCurrentArea}
+                    aria-label={`${alert.label}: ${alert.value}. Abrir no mapa`}
+                  >
                     <span>{alert.label}</span>
                     <strong>{alert.value}</strong>
                     <small>{alert.count} {alert.count === 1 ? 'sinal na região' : 'sinais na região'}</small>
-                  </div>
+                  </button>
                 ))}
               </div>
             </section>
 
             <div className="live-stats-grid">
-              <div className="stat-card">
-                <div className="stat-header"><span>Risco de alagamento</span><span className="live-tag">AO VIVO</span></div>
-                <h2>{areaIndicators.floodRisk}%</h2>
-                <div className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <button type="button" className="stat-card stat-card-button" onClick={handleFocusCurrentArea}>
+                <span className="stat-header"><span>Risco de alagamento</span><span className="live-tag">ESTIMADO</span></span>
+                <strong className="stat-card-value">{areaIndicators.floodRisk}%</strong>
+                <span className="stat-footer" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {areaIndicators.rain.toFixed(1)} mm/h de chuva · {cidadeAtualNome}
-                </div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-header"><span>Retenção no trânsito</span><span className="live-tag blue">VIAS</span></div>
-                <h2>{areaIndicators.traffic}%</h2>
-                <div className="stat-footer">{areaIndicators.alerts[1].count} trechos com trânsito lento</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-header"><span>Obras / interdições</span><span className="live-tag blue">ATIVAS</span></div>
-                <h2>{areaIndicators.activeWorks}</h2>
-                <div className="stat-footer">Pontos ativos na região monitorada</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-header"><span>Buracos / perigos</span><span className="live-tag">VIAS</span></div>
-                <h2>{areaIndicators.hazards}</h2>
-                <div className="stat-footer">Pontos reportados na região monitorada</div>
-              </div>
+                </span>
+              </button>
+              <button type="button" className="stat-card stat-card-button" onClick={handleFocusCurrentArea}>
+                <span className="stat-header"><span>Retenção no trânsito</span><span className="live-tag blue">ESTIMADO</span></span>
+                <strong className="stat-card-value">{areaIndicators.traffic}%</strong>
+                <span className="stat-footer">{areaIndicators.alerts[1].count} trechos com trânsito lento</span>
+              </button>
+              <button type="button" className="stat-card stat-card-button" onClick={handleFocusCurrentArea}>
+                <span className="stat-header"><span>Obras / interdições</span><span className="live-tag blue">SINAIS</span></span>
+                <strong className="stat-card-value">{areaIndicators.activeWorks}</strong>
+                <span className="stat-footer">Pontos ativos na região monitorada</span>
+              </button>
+              <button type="button" className="stat-card stat-card-button" onClick={handleFocusCurrentArea}>
+                <span className="stat-header"><span>Buracos / perigos</span><span className="live-tag">SINAIS</span></span>
+                <strong className="stat-card-value">{areaIndicators.hazards}</strong>
+                <span className="stat-footer">Pontos reportados na região monitorada</span>
+              </button>
             </div>
             {/* SEÇÃO DE PONTOS CRÍTICOS COM DESIGN TOTALMENTE PADRONIZADO */}
             <div className="chart-card-box" style={{ marginTop: '20px' }}>
@@ -1238,25 +1310,26 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
             <div className="map-container-box">
               {!isMounted && <div className="map-loading-placeholder" aria-label="Carregando mapa" />}
               {isMounted && (
-              <MapContainer center={defaultCenter} zoom={13} minZoom={10} maxZoom={18} style={{ height: '100%', width: '100%' }}>
+              <MapContainer center={defaultCenter} zoom={13} minZoom={3} maxZoom={19} style={{ height: '100%', width: '100%' }}>
                 <TileLayer
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  minZoom={10}
-                  maxZoom={18}
-                  attribution="&copy; OpenStreetMap contributors"
+                  key={activeMapTileUrl}
+                  url={activeMapTileUrl}
+                  subdomains="abcd"
+                  minZoom={3}
+                  maxZoom={19}
+                  eventHandlers={{ tileerror: handleMapTileError }}
+                  attribution={mapTileAttribution}
                 />
-                {!mapTilesUnavailable && preferredMapTileUrl && (
-                  <TileLayer
-                    url={preferredMapTileUrl}
-                    minZoom={10}
-                    maxZoom={18}
-                    eventHandlers={{ tileerror: () => setMapTilesUnavailable(true) }}
-                  />
-                )}
                 <MapViewSizeUpdater activeTab={activeTab} mapView={mapView} />
 
                 {origemCoords && <Marker position={origemCoords}><Popup>Sua Posição Atual: {origemQuery}</Popup></Marker>}
                 {destinoCoords && <Marker position={destinoCoords}><Popup>Destino: {destinoQuery}</Popup></Marker>}
+                <FocusedAreaMarker
+                  area={focusedArea}
+                  reports={reportes}
+                  demoRain={demoRain}
+                  realRain={realRain}
+                />
 
                 {mapView === 'streets' && theme === 'light' && DEMO_STREET_ROADS.map((road) => {
                   const roadIncident = DEMO_STREET_INCIDENTS.find((incident) => incident.road === road.name);
@@ -1408,8 +1481,16 @@ function MainApp({ user, onLogout, theme, onToggleTheme }) {
                   <Polyline positions={routeCoords} pathOptions={{ color: '#38bdf8', weight: 6, opacity: 0.8 }} />
                 )}
                 
-                <RouteBoundsAdjuster coords={routeCoords} centerCoords={isNavigating ? origemCoords : null} />
+                <RouteBoundsAdjuster
+                  coords={focusedArea ? [] : routeCoords}
+                  centerCoords={!focusedArea && isNavigating ? origemCoords : null}
+                />
               </MapContainer>
+              )}
+              {mapTileFallbackFailed && (
+                <div className="map-tile-warning" role="status">
+                  Mapa-base indisponível no momento. Os alertas e controles continuam acessíveis.
+                </div>
               )}
             </div>
           </div>
