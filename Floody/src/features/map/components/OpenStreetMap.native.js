@@ -4,13 +4,13 @@ import { WebView } from 'react-native-webview';
 import { env } from '../../../config/env';
 import { buildMapDocument, serializeMapState } from '../services/mapDocument';
 
-export default function OpenStreetMap({ center, origin, destination, route = [] }) {
+export default function OpenStreetMap({ center, origin, destination, route = [], markers, satellite = false }) {
   const webview = useRef(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
-  const source = useMemo(() => ({ html: buildMapDocument(center, env.mapTilesLight) }), [center]);
-  const state = serializeMapState({ center, origin, destination, route });
+  const source = useMemo(() => ({ html: buildMapDocument(center, satellite ? env.mapTilesSatellite : env.mapTilesLight, satellite) }), [center, satellite]);
+  const state = serializeMapState({ center, origin, destination, route, markers });
   useEffect(() => {
     if (ready) webview.current?.injectJavaScript(`window.updateFloodyMap(${state});true;`);
   }, [ready, state, revision]);

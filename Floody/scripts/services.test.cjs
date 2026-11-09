@@ -125,3 +125,85 @@ test('native map bridge accepts only geographic coordinates and preserves route 
  assert.throws(()=>serializeMapState({center:[91,0]}),/Coordenadas/);
  assert.throws(()=>serializeMapState({center:[0,0],route:[[0,181]]}),/Coordenadas/);
 });
+
+test('native map bridge keeps local report labels inert', () => {
+ const marker = { coords: [-8, -34], label: '</script><img src=x>', kind: 'Alagamento', flood: true };
+ const serialized = serializeMapState({ center: [-8, -34], markers: [marker] });
+ assert.ok(!serialized.includes('<'));
+ assert.deepEqual(JSON.parse(serialized).markers, [marker]);
+ assert.match(buildMapDocument([-8, -34]), /label\.textContent=marker\.label/);
+});
+
+test('geocoding rejects missing and out-of-range coordinates', async () => {
+ const { resolveAddress } = load('src/features/map/services/geocodingService.js');
+ const originalFetch = globalThis.fetch;
+ let matches = [
+  { display_name: 'Missing latitude', lat: null, lon: '-34' },
+  { display_name: 'Blank longitude', lat: '-8', lon: ' ' },
+  { display_name: 'Out of range', lat: '91', lon: '-34' },
+ ];
+ globalThis.fetch = async () => new Response(JSON.stringify(matches));
+ try {
+  assert.equal(await resolveAddress('Local inválido'), null);
+  matches = [{ display_name: 'Recife', lat: '-8', lon: '-34' }];
+  assert.deepEqual(await resolveAddress('Recife'), [-8, -34]);
+ } finally {
+  globalThis.fetch = originalFetch;
+ }
+});
+
+test('web route geometry converts GeoJSON to Leaflet order and rejects invisible routes', () => {
+ const { webRouteGeometry } = load('src/features/map/services/webRouteGeometry.js');
+ const route = { distance: 2000, duration: 500, geometry: { type: 'LineString', coordinates: [[-34.88, -8.05], [-34.87, -8.06]] } };
+ assert.deepEqual(webRouteGeometry(route), [[-8.05, -34.88], [-8.06, -34.87]]);
+ for (const coordinates of [[], [[-34.88, -8.05]], [[-34.88, -8.05], [-34.88, -8.05]], [[-34.88, -8.05], [0, 91]]]) {
+  assert.throws(() => webRouteGeometry({ ...route, geometry: { ...route.geometry, coordinates } }));
+ }
+});
+
+test('precipitation uses metric model accumulation, UTC epochs and Recife display time', async () => {
+ const { getCurrentPrecipitation, precipitationDetails } = load('src/features/dashboard/services/weatherService.js');
+ const originalFetch = globalThis.fetch;
+ const validAt = Date.parse('2026-11-10T01:45:00Z');
+ const data = { current_units: { precipitation: 'mm' }, current: { time: validAt / 1000, interval: 900, precipitation: 0 } };
+ globalThis.fetch = async (url, options) => {
+  const params = new URL(url).searchParams;
+  for (const [key, value] of Object.entries({
+   latitude: '-8.05428', longitude: '-34.8813', current: 'precipitation',
+   precipitation_unit: 'mm', timezone: 'America/Recife', timeformat: 'unixtime',
+  })) assert.equal(params.get(key), value);
+  assert.equal(options.cache, 'no-store');
+  return new Response(JSON.stringify(data));
+ };
+ try {
+  const reading = await getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true });
+  assert.deepEqual(reading, { amountMm: 0, validAt, intervalSeconds: 900 });
+  assert.deepEqual(precipitationDetails(reading, validAt + 1000), { period: '15 min', time: '09/11/2026, 22:45', stale: false });
+  assert.equal(precipitationDetails(reading, validAt + 1800000).stale, true);
+  data.current.time = undefined;
+  await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
+ } finally {
+  globalThis.fetch = originalFetch;
+ }
+});
+
+test('native navigation and feature icon names have bundled Material Symbol images', () => {
+ const component = fs.readFileSync('src/components/native/MaterialIcon.native.js', 'utf8');
+ const assets = [...component.matchAll(/import (\w+) from '.*assets\/material-symbols\/(\w+)\.png'/g)];
+ const names = assets.map(([, binding, file]) => {
+  assert.equal(binding, file);
+  const png = fs.readFileSync(`assets/material-symbols/${file}.png`);
+  assert.equal(png.readUInt32BE(0), 0x89504e47);
+  assert.equal(png.readUInt32BE(16), 96);
+  assert.equal(png.readUInt32BE(20), 96);
+  assert.equal(png[25], 6); // Truecolor with alpha, used for theme tinting.
+  return binding;
+ });
+ for (const screen of ['App.native.js', 'features/dashboard/DashboardScreen.native.js', 'features/map/MapScreen.native.js', 'features/reports/screens/ReportScreen.native.js', 'features/profile/VehiclesScreen.native.js']) {
+  const source = fs.readFileSync(`src/${screen}`, 'utf8');
+  const references = [...source.matchAll(/(?:icon: '|icon="|<MaterialIcon name=")(\w+)|icon=\{theme === 'dark' \? '(\w+)' : '(\w+)'\}/g)]
+   .flatMap(match => match.slice(1).filter(Boolean));
+  assert.ok(references.length > 0, screen);
+  references.forEach(name => assert.ok(names.includes(name), `${screen}: missing ${name}`));
+ }
+});

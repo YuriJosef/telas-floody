@@ -11,7 +11,10 @@ function AppContent() {
   const [themeLoaded, setThemeLoaded] = useState(false);
 
   useEffect(() => {
-    if (typeof document !== 'undefined') document.title = 'Floody - Sistema Global de Monitoramento e Navegação';
+    if (typeof document !== 'undefined') {
+      document.title = 'Floody · Chuva, avisos e rotas';
+      document.documentElement.lang = 'pt-BR';
+    }
   }, []);
 
   useEffect(() => {

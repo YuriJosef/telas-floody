@@ -12,8 +12,9 @@ import { createReport, listReports, subscribeToReports, updateReportStatus } fro
 import ReportFormScreen from '../../features/reports/screens/ReportFormScreen';
 import ModerationScreen from '../../features/reports/screens/ModerationScreen';
 import { createVehicle, listFavoriteReportIds, listVehicles, setFavoriteReport } from '../../features/profile/services/userDataService';
-import { getCurrentPrecipitation } from '../../features/dashboard/services/weatherService';
+import { getCurrentPrecipitation, WEATHER_REFRESH_MS } from '../../features/dashboard/services/weatherService';
 import { resolveAddress, reverseGeocode, searchAddresses } from '../../features/map/services/geocodingService';
+import { webRouteGeometry } from '../map/services/webRouteGeometry';
 import { getDrivingRoute } from '../../features/map/services/routingService';
 import { listVehicleMakes, listVehicleModels } from '../../features/profile/services/vehicleCatalogService';
 
@@ -33,7 +34,7 @@ L.Icon.Default.mergeOptions({
 // Ícones Vetoriais (SVG)
 
 import Icons from '../../components/icons/Icons';
-import { LOCAL_AREA_PROFILES, normalizeText, findAreaProfile } from '../dashboard/indicators';
+import { LOCAL_AREA_PROFILES, normalizeText } from '../dashboard/indicators';
 
 function getExactPosition(getCurrentLocation) {
   if (typeof navigator !== 'undefined' && navigator.geolocation?.getCurrentPosition) {
@@ -62,10 +63,10 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
   
   // Meteorologia Real e Monitoramento Global
-  const [realRain, setRealRain] = useState(null);
+  const [weatherReading, setWeatherReading] = useState(null);
+  const [weatherError, setWeatherError] = useState('');
   const [loadingApi, setLoadingApi] = useState(true);
   const [cidadeAtualNome, setCidadeAtualNome] = useState('Recife, PE');
-  const [currentCoords, setCurrentCoords] = useState([-8.05428, -34.8813]);
   
   const [buscaCentralQuery, setBuscaCentralQuery] = useState('');
   const [buscaCentralSuggestions, setBuscaCentralSuggestions] = useState([]);
@@ -82,7 +83,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   // Mapa de Calor Toggle
   const [mapView, setMapView] = useState('flood');
   const [mapTilesUnavailable, setMapTilesUnavailable] = useState(false);
-  const [routePanelCollapsed, setRoutePanelCollapsed] = useState(false);
+  const [routePanelCollapsed, setRoutePanelCollapsed] = useState(() => typeof window === 'undefined' || window.innerWidth < 960);
   
   // Rota e Navegação Ao Vivo
   const [origemQuery, setOrigemQuery] = useState('Recife, PE');
@@ -95,7 +96,6 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [destinoSuggestions, setDestinoSuggestions] = useState([]);
   const debouncedDestinoQuery = useDebouncedValue(destinoQuery, 700);
   
-  const [routeCoords, setRouteCoords] = useState([]);
   const [routeInfo, setRouteInfo] = useState(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
   const [loadingGPS, setLoadingGPS] = useState(false);
@@ -108,8 +108,12 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   // FIPE States
   const [marcas, setMarcas] = useState([]);
-  const [modelos, setModelos] = useState([]);
+  const [catalogError, setCatalogError] = useState('');
+  const [catalogModels, setCatalogModels] = useState(null);
   const [marcaSelecionada, setMarcaSelecionada] = useState({ codigo: '', nome: '' });
+  const currentModels = catalogModels?.make === marcaSelecionada ? catalogModels : null;
+  const modelos = currentModels?.items ?? [];
+  const loadingModels = Boolean(marcaSelecionada.codigo && !currentModels);
   const [modeloSelecionado, setModeloSelecionado] = useState('');
   const [alturaCarro, setAlturaCarro] = useState('');
 
@@ -124,20 +128,26 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const weatherLocationRef = useRef({ coords: [-8.05428, -34.8813], name: 'Recife, PE' });
   const weatherRequestRef = useRef(0);
 
-  const fetchWeatherForCoords = async (lat, lng, nomeLocal) => {
+  const fetchWeatherForCoords = async (lat, lng, nomeLocal, refresh = false) => {
     const requestId = ++weatherRequestRef.current;
-    const locationName = nomeLocal || weatherLocationRef.current.name;
+    const locationName = nomeLocal || weatherLocationRef.current?.name;
     weatherLocationRef.current = { coords: [lat, lng], name: locationName };
-    setLoadingApi(true);
-    setCidadeAtualNome(locationName);
-    setCurrentCoords([lat, lng]);
-    setRealRain(null);
+    if (!refresh) {
+      setLoadingApi(true);
+      setWeatherError('');
+      setCidadeAtualNome(locationName);
+      setWeatherReading(null);
+    }
     try {
-      const precipitation = await getCurrentPrecipitation(lat, lng);
+      const precipitation = await getCurrentPrecipitation(lat, lng, { withDetails: true });
       if (requestId !== weatherRequestRef.current) return;
-      setRealRain(precipitation);
+      setWeatherReading(precipitation);
+      setWeatherError('');
     } catch {
-      if (requestId === weatherRequestRef.current) setRealRain(null);
+      if (requestId === weatherRequestRef.current) {
+        setWeatherReading(null);
+        setWeatherError('Precipitação indisponível. Tente consultar novamente.');
+      }
     } finally {
       if (requestId === weatherRequestRef.current) setLoadingApi(false);
     }
@@ -147,9 +157,10 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE');
 
     const liveTimer = setInterval(() => {
+      if (!weatherLocationRef.current) return;
       const { coords, name } = weatherLocationRef.current;
-      fetchWeatherForCoords(coords[0], coords[1], name);
-    }, 60000);
+      fetchWeatherForCoords(coords[0], coords[1], name, true);
+    }, WEATHER_REFRESH_MS);
 
     return () => {
       clearInterval(liveTimer);
@@ -170,12 +181,20 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     e.preventDefault();
     if (!buscaCentralQuery || buscaCentralQuery.trim().length < 2) return;
     const query = buscaCentralQuery.trim();
+    const requestId = ++weatherRequestRef.current;
+    weatherLocationRef.current = null;
+    setLoadingApi(true);
+    setWeatherReading(null);
+    setWeatherError('');
+    setCidadeAtualNome(query);
     const coords = await geocodeEnderecoDireto(query);
-    const profile = findAreaProfile(query, currentCoords);
-    fetchWeatherForCoords(
-      ...(coords || profile.coords),
-      query
-    );
+    if (requestId !== weatherRequestRef.current) return;
+    if (!coords) {
+      setWeatherError('Local não encontrado ou consulta indisponível. Confira o endereço ou escolha um dos locais de Recife.');
+      setLoadingApi(false);
+    } else {
+      fetchWeatherForCoords(...coords, query);
+    }
     setBuscaCentralSuggestions([]);
   };
 
@@ -194,7 +213,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
           if (active) subscription = nextSubscription;
           else nextSubscription.remove();
         })
-        .catch((error) => setReportError(error.message));
+        .catch((error) => { if (active) { setIsNavigating(false); setReportError(error.message); } });
     }
     return () => {
       active = false;
@@ -232,8 +251,8 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       .then((ids) => { if (active) setFavoritos(ids); })
       .catch((error) => { if (active) setReportError(error.message); });
     listVehicleMakes()
-      .then(data => setMarcas(data))
-      .catch(err => { if (active) setReportError(err.message); });
+      .then(data => { if (active) setMarcas(data); })
+      .catch(() => { if (active) setCatalogError('Catálogo de veículos indisponível. Tente novamente mais tarde.'); });
 
     return () => {
       active = false;
@@ -242,13 +261,12 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   }, [user.id]);
 
   useEffect(() => {
-    if (marcaSelecionada.codigo) {
-      listVehicleModels(marcaSelecionada.codigo)
-        .then(setModelos)
-        .catch(err => setReportError(err.message));
-    } else {
-      setModelos([]);
-    }
+    if (!marcaSelecionada.codigo) return;
+    let active = true;
+    listVehicleModels(marcaSelecionada.codigo)
+      .then(items => { if (active) setCatalogModels({ make: marcaSelecionada, items }); })
+      .catch(() => { if (active) setCatalogModels({ make: marcaSelecionada, error: 'Modelos indisponíveis. Selecione a marca novamente para tentar outra vez.' }); });
+    return () => { active = false; };
   }, [marcaSelecionada]);
 
   const searchAddress = async (query, setSuggestions, signal) => {
@@ -305,6 +323,12 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   };
 
   const handleUseGPS = () => {
+    invalidateRoute();
+    setReportError('');
+    if (origemQuery === 'Minha Localização Atual') {
+      setOrigemCoords(null);
+      setOrigemQuery('');
+    }
     setLoadingGPS(true);
     getCurrentLocation()
       .then((coords) => {
@@ -318,6 +342,9 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const handleBuscarRota = async (e) => {
     e.preventDefault();
+    if (loadingRoute || loadingGPS) return;
+    invalidateRoute();
+    setReportError('');
     setLoadingRoute(true);
 
     let pOrigem = origemCoords;
@@ -341,23 +368,20 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
     try {
       const route = await getDrivingRoute(pOrigem, pDestino);
-      const leafCoords = route.geometry.coordinates.map(([longitude, latitude]) => [latitude, longitude]);
-      setRouteCoords(leafCoords);
-      const distKm = (route.distance / 1000).toFixed(1);
-      const duracaoMin = Math.round(route.duration / 60);
-      const chuvaDestino = await getCurrentPrecipitation(pDestino[0], pDestino[1]).catch(() => null);
-      setRouteInfo({
-        distancia: `${distKm} km`,
-        duracao: `${duracaoMin} min`,
-        chuvaDestino: chuvaDestino == null ? 'Indisponível' : `${chuvaDestino} mm`,
-        statusRisco: 'Consulte as ocorrências aprovadas no mapa',
-        bgRisco: 'var(--primary)',
+      const result = {
+        positions: webRouteGeometry(route),
+        distancia: `${(route.distance / 1000).toFixed(1)} km`,
+        duracao: `${Math.round(route.duration / 60)} min`,
         origem: origemQuery,
-        destino: destinoQuery
+        destino: destinoQuery,
+      };
+      setRouteInfo(result);
+      setIsNavigating(origemQuery === 'Minha Localização Atual');
+      // The route is ready before the optional destination estimate arrives.
+      getCurrentPrecipitation(...pDestino, { withDetails: true }).catch(() => null).then(chuvaDestino => {
+        setRouteInfo(current => current === result ? { ...current, chuvaDestino } : current);
       });
-      setIsNavigating(true);
     } catch {
-      setRouteCoords([]);
       setRouteInfo(null);
       setIsNavigating(false);
       setReportError('Não foi possível obter uma rota viária. Tente novamente mais tarde.');
@@ -366,17 +390,21 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     }
   };
 
-  const handleCancelRoute = () => {
-    setRouteCoords([]);
+  const invalidateRoute = () => {
     setRouteInfo(null);
+    setIsNavigating(false);
+  };
+
+  const handleCancelRoute = () => {
+    invalidateRoute();
+    setReportError('');
     setDestinoQuery('');
     setDestinoCoords(null);
-    setIsNavigating(false);
   };
 
   const handleSaveVeiculo = (e) => {
     e.preventDefault();
-    if (!marcaSelecionada.nome || !modeloSelecionado || !alturaCarro) return;
+    if (!marcaSelecionada.nome || !modelos.some(model => model.nome === modeloSelecionado) || !alturaCarro) return;
     createVehicle({ make: marcaSelecionada.nome, model: modeloSelecionado, ground_clearance_cm: Number(alturaCarro) })
       .then(() => listVehicles())
       .then((data) => setVeiculos(data.map((vehicle) => ({
@@ -433,9 +461,10 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const handleReportGPS = () => {
     setLoadingReportGPS(true);
+    setReportCoords(null);
+    setReportError('');
     getExactPosition(getCurrentLocation)
       .then(async (coords) => {
-        setReportCoords(coords);
         let address = null;
         try {
           address = await reverseGeocode(coords[0], coords[1]);
@@ -446,6 +475,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
           ...current,
           local: address || `Coordenadas ${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
         }));
+        setReportCoords(coords);
         setReportError('');
       })
       .catch((error) => setReportError(error.message))
@@ -456,10 +486,6 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     ? env.mapTilesDark
     : env.mapTilesLight;
   const preferredMapTileUrl = mapView === 'satellite' ? env.mapTilesSatellite : mapTileUrl;
-  const nearbyAreas = [...LOCAL_AREA_PROFILES].sort((first, second) =>
-    Math.hypot(first.coords[0] - currentCoords[0], first.coords[1] - currentCoords[1])
-    - Math.hypot(second.coords[0] - currentCoords[0], second.coords[1] - currentCoords[1])
-  );
   const normalizedReportError = normalizeText(reportError);
   const showReportError = reportError
     && !normalizedReportError.startsWith('servico externo indisponivel')
@@ -477,20 +503,20 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   return (
     <AppShell user={user} activeTab={activeTab} onTabChange={setActiveTab} theme={theme} onToggleTheme={onToggleTheme} onLogout={onLogout}>
-        <p className="local-notice">Modo local: relatos e veículos ficam neste dispositivo. Avisos meteorológicos são consultados no painel junto ao provedor.</p>
+        <p className="local-notice">Modo local · Relatos e veículos ficam neste dispositivo.</p>
         {showReportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
-          <DashboardScreen buscaCentralQuery={buscaCentralQuery} buscaCentralSuggestions={buscaCentralSuggestions} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} fetchWeatherForCoords={fetchWeatherForCoords} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={nearbyAreas} realRain={realRain} reportLoading={reportLoading} reportesExibidos={reportesExibidos} selectedCentralAddressRef={selectedCentralAddressRef} setBuscaCentralQuery={setBuscaCentralQuery} setBuscaCentralSuggestions={setBuscaCentralSuggestions} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
+          <DashboardScreen weatherError={weatherError} buscaCentralQuery={buscaCentralQuery} buscaCentralSuggestions={buscaCentralSuggestions} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} fetchWeatherForCoords={fetchWeatherForCoords} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} selectedCentralAddressRef={selectedCentralAddressRef} setBuscaCentralQuery={setBuscaCentralQuery} setBuscaCentralSuggestions={setBuscaCentralSuggestions} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
         )}
 
         {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS */}
         {activeTab === 'mapa' && (
-          <MapScreen activeTab={activeTab} defaultCenter={defaultCenter} destinoCoords={destinoCoords} destinoQuery={destinoQuery} destinoSuggestions={destinoSuggestions} handleBuscarRota={handleBuscarRota} handleCancelRoute={handleCancelRoute} handleUseGPS={handleUseGPS} isMounted={isMounted} isNavigating={isNavigating} loadingGPS={loadingGPS} loadingRoute={loadingRoute} mapTilesUnavailable={mapTilesUnavailable} mapView={mapView} origemCoords={origemCoords} origemQuery={origemQuery} origemSuggestions={origemSuggestions} preferredMapTileUrl={preferredMapTileUrl} reportes={reportes} routeCoords={routeCoords} routeInfo={routeInfo} routePanelCollapsed={routePanelCollapsed} setDestinoCoords={setDestinoCoords} setDestinoQuery={setDestinoQuery} setDestinoSuggestions={setDestinoSuggestions} setMapTilesUnavailable={setMapTilesUnavailable} setMapView={setMapView} setOrigemCoords={setOrigemCoords} setOrigemQuery={setOrigemQuery} setOrigemSuggestions={setOrigemSuggestions} setRoutePanelCollapsed={setRoutePanelCollapsed} theme={theme} />
+          <MapScreen activeTab={activeTab} defaultCenter={defaultCenter} destinoCoords={destinoCoords} destinoQuery={destinoQuery} destinoSuggestions={destinoSuggestions} handleBuscarRota={handleBuscarRota} handleCancelRoute={handleCancelRoute} invalidateRoute={invalidateRoute} handleUseGPS={handleUseGPS} isMounted={isMounted} isNavigating={isNavigating} loadingGPS={loadingGPS} loadingRoute={loadingRoute} mapTilesUnavailable={mapTilesUnavailable} mapView={mapView} origemCoords={origemCoords} origemQuery={origemQuery} origemSuggestions={origemSuggestions} preferredMapTileUrl={preferredMapTileUrl} reportes={reportes} routeInfo={routeInfo} routePanelCollapsed={routePanelCollapsed} setDestinoCoords={setDestinoCoords} setDestinoQuery={setDestinoQuery} setDestinoSuggestions={setDestinoSuggestions} setMapTilesUnavailable={setMapTilesUnavailable} setMapView={setMapView} setOrigemCoords={setOrigemCoords} setOrigemQuery={setOrigemQuery} setOrigemSuggestions={setOrigemSuggestions} setRoutePanelCollapsed={setRoutePanelCollapsed} theme={theme} />
         )}
 
         {/* GARAGEM FIPE */}
         {activeTab === 'veiculos' && (
-          <VehiclesScreen alturaCarro={alturaCarro} handleSaveVeiculo={handleSaveVeiculo} marcaSelecionada={marcaSelecionada} marcas={marcas} modeloSelecionado={modeloSelecionado} modelos={modelos} setAlturaCarro={setAlturaCarro} setMarcaSelecionada={setMarcaSelecionada} setModeloSelecionado={setModeloSelecionado} user={user} veiculos={veiculos} />
+          <VehiclesScreen catalogError={currentModels?.error || catalogError} loadingModels={loadingModels} alturaCarro={alturaCarro} handleSaveVeiculo={handleSaveVeiculo} marcaSelecionada={marcaSelecionada} marcas={marcas} modeloSelecionado={modeloSelecionado} modelos={modelos} setAlturaCarro={setAlturaCarro} setMarcaSelecionada={setMarcaSelecionada} setModeloSelecionado={setModeloSelecionado} user={user} veiculos={veiculos} />
         )}
 
         {/* REPORTAR */}
@@ -511,15 +537,15 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
         {/* SUCESSO */}
         {activeTab === 'sucesso_reporte' && (
-          <div className="fade-in scrollable-tab" style={{ textAlign: 'center', justifyContent: 'center', alignItems: 'center' }}>
-            <div className="form-card" style={{ maxWidth: '400px', width: '100%', margin: '0 auto' }}>
-              <div style={{ color: 'var(--success)', marginBottom: '10px' }}>
+          <div className="scrollable-tab confirmation-page">
+            <section className="confirmation-card" aria-labelledby="report-saved-title">
+              <div className="confirmation-icon" aria-hidden="true">
                 <Icons.Check />
               </div>
-              <h2>Ocorrência registrada com sucesso!</h2>
-              <p style={{ margin: '12px 0 24px 0', color: 'var(--text-muted)' }}>Relato salvo somente neste dispositivo, pendente de moderação.</p>
-              <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Voltar à Central</button>
-            </div>
+              <h1 id="report-saved-title">Relato salvo neste dispositivo</h1>
+              <p>Seu registro está com status pendente. Ele não foi publicado nem enviado a serviços de emergência.</p>
+              <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Voltar ao painel</button>
+            </section>
           </div>
         )}
 

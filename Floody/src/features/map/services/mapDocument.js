@@ -5,11 +5,11 @@ export function mapCoordinates(value) {
   if (!Array.isArray(value) || value.length !== 2 || !value.every(Number.isFinite) || Math.abs(value[0]) > 90 || Math.abs(value[1]) > 180) throw new Error('Coordenadas inválidas para o mapa.');
   return value;
 }
-export function serializeMapState({ center, origin = null, destination = null, route = [] }) {
+export function serializeMapState({ center, origin = null, destination = null, route = [], markers }) {
   if (!Array.isArray(route) || route.length > 50000) throw new Error('Traçado inválido para o mapa.');
-  return JSON.stringify({ center: mapCoordinates(center), origin: origin ? mapCoordinates(origin) : null, destination: destination ? mapCoordinates(destination) : null, route: route.map(mapCoordinates) }).replace(/</g, '\\u003c');
+  return JSON.stringify({ center: mapCoordinates(center), origin: origin ? mapCoordinates(origin) : null, destination: destination ? mapCoordinates(destination) : null, route: route.map(mapCoordinates), ...(markers && { markers: markers.map(marker => ({ coords: mapCoordinates(marker.coords), label: String(marker.label), kind: String(marker.kind), flood: Boolean(marker.flood) })) }) }).replace(/</g, '\\u003c');
 }
-export function buildMapDocument(center, tileUrl = OPEN_MAP_TILES) {
+export function buildMapDocument(center, tileUrl = OPEN_MAP_TILES, satellite = false) {
   const url = new URL(tileUrl.replace('{s}', 'a').replace('{z}', '0').replace('{x}', '0').replace('{y}', '0'));
   if (url.protocol !== 'https:') throw new Error('O mapa exige um provedor HTTPS.');
   const initial = serializeMapState({ center });
@@ -18,7 +18,7 @@ export function buildMapDocument(center, tileUrl = OPEN_MAP_TILES) {
 (function(){
   var map=L.map('map',{zoomControl:true}).setView(${JSON.stringify(mapCoordinates(center))},13);
   var group=L.layerGroup().addTo(map), cameraKey='';
-  var tiles=L.tileLayer(${tiles},{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'}).addTo(map);
+  var tiles=L.tileLayer(${tiles},{maxZoom:19,attribution:${JSON.stringify(satellite ? 'Tiles &copy; Esri' : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors')}}).addTo(map);
   tiles.on('tileerror',function(){document.getElementById('status').textContent='Mapa indisponível. Verifique sua conexão.';});
   tiles.on('tileload',function(){document.getElementById('status').textContent='';});
   window.updateFloodyMap=function(data){
@@ -26,7 +26,12 @@ export function buildMapDocument(center, tileUrl = OPEN_MAP_TILES) {
     if(data.origin)L.circleMarker(data.origin,{radius:9,color:'#fff',weight:3,fillColor:'#2563eb',fillOpacity:1}).bindPopup('Origem').addTo(group);
     if(data.destination)L.circleMarker(data.destination,{radius:9,color:'#fff',weight:3,fillColor:'#dc2626',fillOpacity:1}).bindPopup('Destino').addTo(group);
     if(data.route.length)L.polyline(data.route,{color:'#2563eb',weight:5}).addTo(group);
-    var key=JSON.stringify(data);
+    (data.markers||[]).forEach(function(marker){
+      var label=document.createElement('span');
+      label.textContent=marker.label+' · '+marker.kind;
+      L.circleMarker(marker.coords,{radius:8,color:'#fff',weight:2,fillColor:marker.flood?'#dc2626':'#d97706',fillOpacity:1}).bindPopup(label).addTo(group);
+    });
+    var key=JSON.stringify([data.center,data.origin,data.destination,data.route]);
     if(key!==cameraKey){
       if(data.route.length)map.fitBounds(L.latLngBounds(data.route),{padding:[28,28],maxZoom:16});
       else map.setView(data.origin||data.center,data.origin?16:13);

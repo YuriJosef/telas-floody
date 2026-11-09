@@ -7,9 +7,9 @@ export function RouteBoundsAdjuster({ coords, centerCoords }) {
   useEffect(() => {
     // Fit a new route first. Later GPS updates may follow the moving origin.
     if (coords?.length > 1 && coords !== lastRoute.current) {
-      map.fitBounds(coords, { padding: [32, 32], maxZoom: 16 });
+      map.fitBounds(coords, { padding: [32, 32], maxZoom: 16, animate: false });
     } else if (centerCoords) {
-      map.setView(centerCoords, coords?.length ? 16 : 14, { animate: true });
+      map.setView(centerCoords, coords?.length ? 16 : 14, { animate: false });
     }
     lastRoute.current = coords;
   }, [coords, centerCoords, map]);
