@@ -8,8 +8,7 @@ November 9, 2026. Commands below ran from `Floody/` unless noted. Test data was 
 | `npm.cmd run check` | Pass, source bindings and platform imports. |
 | `git diff --check` | Pass. Git reported line-ending normalization warnings on existing files. |
 | `node node_modules/expo/bin/cli start --web --localhost --port 18551` with `CI=1`, `EXPO_OFFLINE=1` | Local Metro server for screenshots and smoke test. |
-| `node ../docs/release-candidate/capture-web.cjs` | Playwright/Edge. Pass at 1440 × 900 (light) and 390 × 844 (dark). Guest entry, tabs, wheel reachability, keyboard selection, weather, route fit and invalidation, local pending report, garage save and reload. Satellite fallback label issue reproduced separately. 14 web screenshots. |
-| `node node_modules/expo/bin/cli start --web --localhost --port 18552` with `CI=1`, `EXPO_OFFLINE=1` | Local Metro server for the existing regression script. |
+| `node ../docs/release-candidate/capture-web.cjs` | Playwright/Edge. Pass at 1440 × 900 (light) and 390 × 844 (dark). Guest entry, tabs, wheel reachability, keyboard selection, weather, route fit and invalidation, local pending report, garage save and reload. Satellite fallback label issue reproduced separately. Five PNGs each under `screenshots/desktop-web/` and `screenshots/mobile-web/`. Full-page PNGs keep below-fold content visible. |
 | `node scripts/web-regression.cjs` | Pass with deterministic fixtures. Stable Recife shortcut order and geometry at 320, 390 and 1366 px, keyboard activation and refresh, invalid lookup, stale/unavailable weather, Recife timestamp, visible/fitted route before destination weather, destination updates and failure clearing. |
 | `node scripts/web-regression.cjs --live` | Pass. Browser drew the live OSRM response with 63 route points. Address resolution and the other app providers remained fixtures in this run. |
 | `node node_modules/expo/bin/cli export --platform ios --platform android --max-workers 2 --output-dir .expo/release-candidate-native` with `CI=1`, `EXPO_OFFLINE=1` | Pass for iOS and Android Hermes bytecode. Export contained the Google Sans Flex TTF and all 13 native Material Symbol assets. Output stayed in ignored local storage. |
@@ -33,6 +32,4 @@ Live probes establish only a point-in-time response. The default public Nominati
 
 No local Android SDK/ADB, connected device, or iOS simulator was available. Native screenshots, phone runtime, permission dialogs, map gestures, keyboard behavior and accessibility remain unverified in this run. Browser screenshots in the gallery are labeled as web. Local bundle exports are not device builds.
 
-The first screenshot pass captured desktop map tiles while some were still loading. The gallery capture was repeated with a tile-settle wait. Application checks completed without a test failure. The confirmed satellite-label mismatch is an audit finding, preserved in this documentation-only release task.
-
-The initial staged whitespace check flagged trailing spaces in upstream font notices and interpreted the generated PDF as text. The notices received whitespace-only cleanup, and the PDF was marked binary to preserve its bytes.
+Application checks completed without a test failure. The confirmed satellite-label mismatch is an audit finding, preserved in this documentation-only release task. The gallery uses a tile-settle wait and full-page captures for long screens. The capture script hides the normally off-screen, unfocused skip link during full-page screenshots so it cannot overlay the scrollable content.

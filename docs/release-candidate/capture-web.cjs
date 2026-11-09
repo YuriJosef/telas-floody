@@ -18,6 +18,8 @@ async function capture() {
   console.log('Live OSRM response',livePayload.routes[0].geometry.coordinates.length,'points');
   for(const [platform,width,height,theme] of [['desktop',1440,900,'light'],['mobile',390,844,'dark']]){
     if(process.env.RC_CAPTURE_PLATFORM && process.env.RC_CAPTURE_PLATFORM!==platform)continue;
+    const platformDir=path.join(dir,platform+'-web');
+    fs.mkdirSync(platformDir,{recursive:true});
     const context=await browser.newContext({viewport:{width,height},permissions:['geolocation'],geolocation:{latitude:-8.05428,longitude:-34.8813}});
     try{
       const page=await context.newPage();await page.clock.setFixedTime(fixedTime+180000);
@@ -33,7 +35,7 @@ async function capture() {
         if(u.hostname==='router.project-osrm.org'){routeCalls++;return json(livePayload);}
         if(u.hostname==='server.arcgisonline.com'){satelliteBlocked=true;return r.abort();}
         if(u.hostname==='nominatim.openstreetmap.org'){
-          if(u.pathname==='/reverse')return json({display_name:'Praça do Marco Zero, Recife · teste'});
+          if(u.pathname==='/reverse')return json({display_name:'Marco Zero (teste)'});
           const q=u.searchParams.get('q');
           return json(q==='Marco Zero, Recife'?[{display_name:q,lat:'-8.0631',lon:'-34.8711'}]:[]);
         }
@@ -45,9 +47,18 @@ async function capture() {
         return r.abort();
       });
       const button=name=>page.getByRole('button',{name,exact:true});
-      const shot=async (screen)=>{
+      const shot=async (screen,{fullPage=false}={})=>{
         assert(await page.evaluate(async()=>{await document.fonts.ready;return [...document.fonts].some(font=>font.family.includes('Google Sans Flex')&&font.status==='loaded');}));
-        await page.screenshot({path:path.join(dir,'web-'+platform+'-'+screen+'-'+theme+'-demo.png'),animations:'disabled'});
+        if(fullPage && platform==='mobile'){
+          // Position the real sticky bar at the end of the document for the full-page capture.
+          await page.evaluate(()=>window.scrollTo(0,document.documentElement.scrollHeight));
+        }
+        await page.screenshot({
+          path:path.join(platformDir,screen+'-'+theme+'-demo.png'),
+          animations:'disabled',fullPage,
+          // The fixed skip link is normally outside the viewport unless focused.
+          style:fullPage ? '.skip-link:not(:focus) { visibility: hidden; }' : undefined,
+        });
       };
       const top=()=>page.evaluate(()=>window.scrollTo(0,0));
       const reach=async target=>{
@@ -73,11 +84,7 @@ async function capture() {
       assert.deepEqual(weatherCalls.at(-1),['-8.1191','-34.8964']);
       assert.deepEqual(await grid.getByRole('button').allTextContents(),order);
       assert.equal(await grid.getByRole('button',{name:'Boa Viagem'}).getAttribute('aria-pressed'),'true');
-      await top();await shot('02-painel');
-      if(platform==='mobile'){
-        await page.locator('#weather-title').evaluate(e=>e.scrollIntoView({block:'start'}));
-        await page.mouse.wheel(0,-60);await page.waitForTimeout(150);await shot('03-precipitacao');
-      }
+      await top();await shot('02-painel-avisos-e-precipitacao',{fullPage:true});
       await button('Mapa').click();await top();
       const planner=button('Planejar rota');
       if(await planner.getAttribute('aria-expanded')==='false')await planner.click();
@@ -91,11 +98,8 @@ async function capture() {
       assert.equal(routeCalls,1);
       await page.locator('.leaflet-tile-loaded').first().waitFor();
       await page.waitForFunction(()=>[...document.querySelectorAll('.leaflet-tile')].every(tile=>tile.classList.contains('leaflet-tile-loaded')),{}, {timeout:6500}).catch(()=>{});
-      await top();await shot('04-mapa-rota');
-      if(platform==='mobile'){
-        await page.getByRole('heading',{name:'Rota calculada'}).evaluate(e=>e.scrollIntoView({block:'center'}));
-        await shot('05-planejador');
-      }
+      await page.getByRole('heading',{name:'Rota calculada'}).waitFor();
+      await top();await shot('03-mapa-e-planejador',{fullPage:true});
       await destination.fill('Endereço inválido');
       await button('Calcular rota').click();
       await page.getByText(/Informe uma origem e um destino válidos/).waitFor();
@@ -114,11 +118,10 @@ async function capture() {
       await page.getByText('Posição obtida para este relato.').waitFor();
       await page.getByLabel('Descrição').fill('TESTE DE APRESENTAÇÃO. Registro fictício, sem ocorrência observada.');
       await reach(save);
-      await shot('06-relato');
+      await top();await shot('04-formulario-de-relato',{fullPage:true});
       await save.click();
       await page.getByRole('heading',{name:'Relato salvo neste dispositivo'}).waitFor();
       assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('floody_reports'))[0].status),'Pendente');
-      await top();await shot('07-relato-salvo');
       await button('Voltar ao painel').click();
       assert.equal(await page.getByText(/TESTE DE APRESENTAÇÃO/).count(),0);
       await button('Garagem').click();
@@ -128,7 +131,7 @@ async function capture() {
       await page.getByLabel('Vão livre do solo (cm)').fill('17');
       await button('Salvar veículo').click();
       const vehicle=page.locator('.vehicle-row').filter({hasText:'Fiat - Uno Mille Fire 1.0'});
-      await vehicle.waitFor();await reach(vehicle);await shot('08-garagem');
+      await vehicle.waitFor();await reach(vehicle);await top();await shot('05-garagem-veiculo-salvo',{fullPage:true});
       await page.reload({waitUntil:'domcontentloaded'});await guest.click();await button('Garagem').click();await vehicle.waitFor();
       assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('floody_reports')).length),1);
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
@@ -136,7 +139,7 @@ async function capture() {
       console.log(platform,theme,'guest/nav/scroll/keyboard/weather/route/report/garage/reload verified');
     }finally{await context.close();}
   }
-  console.log('Captured',fs.readdirSync(dir).filter(x=>x.endsWith('.png')).length,'application screenshots.');
+  console.log('Captured application screenshots in',dir);
  } finally {
   await browser.close();
  }
