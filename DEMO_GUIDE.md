@@ -1,10 +1,10 @@
-# Floody 2.0 demo guide
+# Guia de demonstração do Floody 2.0
 
-Wednesday, November 11, 2026. Present from desktop web using **Ruas** for the basemap. Rehearse once in the same browser profile and on the same network you will use for the demo.
+Quarta-feira, 11 de novembro de 2026. Faça a apresentação pela versão web em um computador, utilizando **Ruas** como mapa-base. Realize pelo menos um ensaio no mesmo perfil de navegador e na mesma rede que serão usados na apresentação.
 
-## Local setup
+## Configuração local
 
-Use Node.js 24.3 or later in the 24.x line, npm, and an internet connection. Open PowerShell at the repository root on `feature/floody-2.0-m3-expressive`. Check that your copy includes the local hardening commit before rehearsing.
+Utilize Node.js 24.3 ou superior, dentro da série 24.x, npm e uma conexão com a internet. Abra o PowerShell na raiz do repositório, na branch `feature/floody-2.0-m3-expressive`. Antes de ensaiar, confirme que sua cópia contém o commit local com as correções de estabilização.
 
 ```powershell
 Set-Location Floody
@@ -12,30 +12,30 @@ npm.cmd ci
 if (-not (Test-Path .env.local)) { Copy-Item .env.example .env.local }
 ```
 
-Open `Floody/.env.local` in your editor and set `EXPO_PUBLIC_GEOAPIFY_API_KEY` to your team's demo key. Keep the other sample endpoints unless the team has an approved configuration. The file is ignored by Git, but Expo embeds `EXPO_PUBLIC_*` values in client bundles. Use a dedicated key with an allowed web origin or referrer for the actual demo URL. Keep the key out of screenshots, shared logs, and Git. [Geoapify key configuration](https://myprojects.geoapify.com/help/api-keys/)
+Abra `Floody/.env.local` no editor e defina `EXPO_PUBLIC_GEOAPIFY_API_KEY` com a chave de demonstração da equipe. Mantenha os demais endpoints de exemplo, a menos que a equipe tenha aprovado outra configuração. O arquivo é ignorado pelo Git, mas o Expo incorpora os valores `EXPO_PUBLIC_*` aos pacotes do aplicativo. Utilize uma chave específica para a demonstração, com a origem web ou o referenciador autorizado para a URL efetivamente utilizada. Não exponha a chave em capturas de tela, logs compartilhados ou no Git. [Configuração da chave Geoapify](https://myprojects.geoapify.com/help/api-keys/)
 
 ```powershell
 npm.cmd run web -- --localhost
 ```
 
-Open the URL Metro prints, normally `http://localhost:8081`. Stop and restart Expo after changing `.env.local`. If a phone is part of the presentation, rehearse on a device running an Expo Go version compatible with SDK 58. Run `npm.cmd start` from `Floody/` and scan the QR code on the same network. The web key's origin restrictions may require a separate native demo key. [Expo SDK 58](https://docs.expo.dev/versions/v58.0.0/)
+Abra a URL exibida pelo Metro, normalmente `http://localhost:8081`. Depois de alterar `.env.local`, interrompa e reinicie o Expo. Caso um celular faça parte da apresentação, ensaie em um dispositivo com uma versão do Expo Go compatível com o SDK 58. Execute `npm.cmd start` dentro de `Floody/` e leia o código QR na mesma rede. As restrições de origem da chave web podem exigir outra chave para a demonstração nativa. [Expo SDK 58](https://docs.expo.dev/versions/v58.0.0/)
 
-## Demo flow
+## Roteiro da demonstração
 
-1. **Entry.** Select **Continuar no modo local**. Explain that the demo stores records in this browser profile.
-2. **Painel.** Show **Avisos do INMET**, **Precipitação**, and **Relatos locais** as separate sources. Switch between **Recife Antigo** and **Boa Viagem** under **Locais de Recife**. Point out the modeled accumulation in mm, the interval, and Recife validity time. An empty feed does not establish that conditions are safe.
-3. **Mapa.** Select **Ruas**. If the planner is collapsed, open **Planejar rota**. Enter `Rua da Aurora, 225, Recife` in **Origem** and `Marco Zero, Recife` in **Destino**. Select the matching suggestions if offered, then choose **Calcular rota**. Show the fitted route, distance and estimated duration. The route does not account for flooding or give turn-by-turn guidance.
-4. **Relatar.** Choose **Usar minha localização** and allow browser location for a public demo location. Select **Obra** and enter `Demonstração — registro fictício` as the description. Choose **Salvar relato local**, then **Voltar ao painel**. Show the entry as **Pendente** under **Relatos locais**. It stays on this device and does not appear on the approved-report map.
-5. **Garagem.** Choose a **Marca** and **Modelo** from the FIPE catalog, enter an example **Vão livre do solo (cm)** such as `17`, and choose **Salvar veículo**. Show the record under **Veículos neste dispositivo**. The example clearance does not imply a safe water depth.
+1. **Entrada.** Selecione **Continuar no modo local**. Explique que a demonstração armazena os registros neste perfil do navegador.
+2. **Painel.** Apresente **Avisos do INMET**, **Precipitação** e **Relatos locais** como fontes distintas. Alterne entre **Recife Antigo** e **Boa Viagem**, na seção **Locais de Recife**. Destaque o acumulado estimado em milímetros (mm), o intervalo considerado e o horário de validade em Recife. A ausência de avisos não significa que as condições sejam seguras.
+3. **Mapa.** Selecione **Ruas**. Caso o planejador esteja recolhido, abra **Planejar rota**. Digite `Rua da Aurora, 225, Recife` em **Origem** e `Marco Zero, Recife` em **Destino**. Se aparecerem sugestões correspondentes, selecione-as e clique em **Calcular rota**. Mostre o trajeto enquadrado no mapa, a distância e a duração estimada. A rota não considera alagamentos nem oferece instruções de navegação curva a curva.
+4. **Relatar.** Selecione **Usar minha localização** e permita o acesso do navegador à localização para uma demonstração em local público. Escolha **Obra** e digite `Demonstração — registro fictício` na descrição. Selecione **Salvar relato local** e depois **Voltar ao painel**. Mostre o registro com o status **Pendente**, em **Relatos locais**. Ele permanece neste dispositivo e não aparece no mapa de relatos aprovados.
+5. **Garagem.** Selecione uma **Marca** e um **Modelo** no catálogo FIPE, informe um valor ilustrativo de **Vão livre do solo (cm)**, como `17`, e selecione **Salvar veículo**. Mostre o registro em **Veículos neste dispositivo**. O valor ilustrativo da altura livre não representa uma profundidade segura de água.
 
-## Troubleshooting and limits
+## Solução de problemas e limitações
 
-| Symptom | What to do |
+| Sintoma | O que fazer |
 | --- | --- |
-| Missing suggestions, 401 or 403 | Confirm the key is in `.env.local` inside `Floody/`. Check that the provider allows the exact browser origin or referrer, including the port. Restart Expo. |
-| Geoapify rate-limit message | Pause for at least 30 seconds and check project quota if it persists. The Recife precipitation shortcuts remain available without geocoding. |
-| Route, tiles, weather, alerts, or catalog unavailable | Confirm internet access. Use **Ruas** and retry once. If the provider stays unavailable, show the error state or use the labeled [desktop web reference screenshots](docs/release-candidate/screenshots/desktop-web) from the earlier validation. |
-| Browser location denied or inaccurate | Allow location for the localhost site and verify the reported position before saving. Use typed endpoints for routing. If GPS remains unavailable or would expose a private location, show the report form without saving. |
-| Phone cannot open the QR session | Check SDK compatibility and the local network. Use the verified desktop web flow if the device has not been rehearsed. |
+| Sugestões ausentes; erro 401 ou 403 | Confirme que a chave está em `.env.local`, dentro de `Floody/`. Verifique se o provedor permite a origem ou o referenciador exato do navegador, incluindo a porta. Reinicie o Expo. |
+| Mensagem de limite de requisições do Geoapify | Aguarde pelo menos 30 segundos e, se o problema continuar, consulte a cota do projeto. Os atalhos de precipitação de Recife continuam disponíveis sem geocodificação. |
+| Rota, mapas, previsão do tempo, avisos ou catálogo indisponíveis | Confirme a conexão com a internet. Utilize **Ruas** e tente novamente uma vez. Se o provedor continuar indisponível, mostre o estado de erro ou utilize as [capturas de referência da versão web para computador](docs/release-candidate/screenshots/desktop-web), identificadas como tal, da validação anterior. |
+| Localização negada ou imprecisa no navegador | Permita o acesso à localização para o site em localhost e confira a posição informada antes de salvar. Para o planejamento de rotas, digite os endereços. Se o GPS continuar indisponível ou puder revelar um local privado, mostre o formulário de relato sem salvar. |
+| O celular não consegue abrir a sessão pelo QR code | Confira a compatibilidade do SDK e a rede local. Utilize o fluxo web em computador, já validado, se o dispositivo não tiver sido ensaiado. |
 
-Open-Meteo provides model estimates, and RadarMeteorológico relays official INMET alerts. Internet-dependent services can be delayed or unavailable. Reports and vehicles are local, with no public submission or moderation workflow. Native bundles were exported, while permissions and interaction on a physical device still need rehearsal. [Validation](docs/release-candidate/VALIDATION.md) · [Provider review](docs/release-candidate/PROVIDERS.md)
+O Open-Meteo fornece estimativas de modelos meteorológicos, enquanto o RadarMeteorológico retransmite avisos oficiais do INMET. Serviços dependentes da internet podem apresentar atrasos ou ficar indisponíveis. Relatos e veículos são armazenados localmente, sem envio público nem fluxo de moderação. Os pacotes nativos foram exportados, mas as permissões e interações em dispositivos físicos ainda precisam ser ensaiadas. [Validação](docs/release-candidate/VALIDATION.md) · [Análise dos provedores](docs/release-candidate/PROVIDERS.md)
