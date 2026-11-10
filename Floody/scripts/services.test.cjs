@@ -43,6 +43,7 @@ test('vehicle validation and favorites are persistent and deduplicated',async()=
 });
 test('external client requires HTTPS and preserves encoded queries',()=>{
  assert.throws(()=>buildUrl('http://example.com'),/HTTPS/);
+ assert.throws(()=>buildUrl('https://demo:password@example.com'),/credenciais/);
  assert.equal(new URL(buildUrl('https://example.com',{q:'Rua A & B'})).searchParams.get('q'),'Rua A & B');
 });
 test('external errors and cancellation are propagated',async()=>{
@@ -124,4 +125,265 @@ test('native map bridge accepts only geographic coordinates and preserves route 
  assert.throws(()=>serializeMapState({center:['</script>',-34]}),/Coordenadas/);
  assert.throws(()=>serializeMapState({center:[91,0]}),/Coordenadas/);
  assert.throws(()=>serializeMapState({center:[0,0],route:[[0,181]]}),/Coordenadas/);
+});
+
+test('native map bridge keeps local report labels inert', () => {
+ const marker = { coords: [-8, -34], label: '</script><img src=x>', kind: 'Alagamento', flood: true };
+ const serialized = serializeMapState({ center: [-8, -34], markers: [marker] });
+ assert.ok(!serialized.includes('<'));
+ assert.deepEqual(JSON.parse(serialized).markers, [marker]);
+ assert.match(buildMapDocument([-8, -34]), /label\.textContent=marker\.label/);
+});
+
+const geoModule = 'src/features/map/services/geocodingService.js';
+let geo;
+const geoEnv = load('src/config/env.js').env;
+const point = (coordinates, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates }, properties });
+const collection = (...features) => ({ type: 'FeatureCollection', features });
+
+async function withGeoapify(fetch, run, key = 'fixture-key') {
+ const originalFetch = globalThis.fetch;
+ const originalKey = geoEnv.geoapifyApiKey;
+ globalThis.fetch = fetch;
+ geoEnv.geoapifyApiKey = key;
+ cache.delete(path.resolve(geoModule));
+ geo = load(geoModule);
+ try { await run(); }
+ finally { globalThis.fetch = originalFetch; geoEnv.geoapifyApiKey = originalKey; }
+}
+
+test('Geoapify autocomplete filters Brazil, biases Recife, caps results and normalizes addresses', async () => {
+ let calls = 0;
+ await withGeoapify(async url => {
+  calls++;
+  const request = new URL(url);
+  assert.equal(request.origin + request.pathname, 'https://api.geoapify.com/v1/geocode/autocomplete');
+  for (const [key, value] of Object.entries({ apiKey: 'fixture-key', lang: 'pt', filter: 'countrycode:br',
+   bias: 'proximity:-34.8813,-8.05428', limit: '5', text: 'Rua São Paulo', format: 'geojson' })) {
+   assert.equal(request.searchParams.get(key), value);
+  }
+  const good = point([-46.63, -23.55], { formatted: 'Rua São Paulo, 42', street: 'Rua São Paulo', housenumber: '42',
+   suburb: 'Centro', city: 'São Paulo', state: 'São Paulo', country: 'Brasil', place_id: 'fixture-place' });
+  return Response.json(collection(point([null, 0], { formatted: 'Inválido' }), point([0, 91], { formatted: 'Inválido' }),
+   good, ...Array.from({ length: 6 }, () => point([-46.6, -23.5], { address_line1: 'Outra rua', address_line2: 'São Paulo' }))));
+ }, async () => {
+  assert.deepEqual(await geo.searchAddresses(' A. 1 '), []);
+  assert.equal(calls, 0);
+  const result = await geo.searchAddresses('  Rua  São Paulo ');
+  assert.equal(result.length, 5);
+  assert.deepEqual(result[0], { display_name: 'Rua São Paulo, 42', lat: -23.55, lon: -46.63,
+   street: 'Rua São Paulo', houseNumber: '42', neighborhood: 'Centro', city: 'São Paulo', state: 'São Paulo', country: 'Brasil', id: 'fixture-place' });
+  assert.equal(result[1].display_name, 'Outra rua, São Paulo');
+ });
+});
+
+test('Geoapify separates forward and reverse requests and accepts an empty result', async () => {
+ const requests = [];
+ await withGeoapify(async url => {
+  const request = new URL(url);
+  requests.push(request);
+  return Response.json(request.searchParams.get('text') === 'Local inexistente' ? collection() :
+   collection(point([-34.9, -8.1], { formatted: 'Recife, PE' })));
+ }, async () => {
+  assert.deepEqual(await geo.resolveAddress('Recife'), [-8.1, -34.9]);
+  assert.equal(await geo.resolveAddress('Local inexistente'), null);
+  assert.equal(await geo.reverseGeocode(-8.1, -34.9), 'Recife, PE');
+  assert.equal(requests[0].pathname, '/v1/geocode/search');
+  assert.equal(requests[0].searchParams.get('limit'), '1');
+  assert.equal(requests[2].pathname, '/v1/geocode/reverse');
+  assert.equal(requests[2].searchParams.get('lat'), '-8.1');
+  assert.equal(requests[2].searchParams.get('lon'), '-34.9');
+  await assert.rejects(geo.reverseGeocode(91, -34.9), /Coordenadas inválidas/);
+  assert.equal(requests.length, 3);
+ });
+});
+
+test('Geoapify errors distinguish key, quota, and invalid provider data without leaking a URL', async () => {
+ await withGeoapify(() => assert.fail('Missing key must not fetch'), async () => {
+  await assert.rejects(geo.searchAddresses('Recife'), /não configurada/);
+ }, '');
+ for (const [status, message] of [[401, /recusou/], [403, /recusou/], [429, /Limite/], [500, /indisponível/]]) {
+  await withGeoapify(async () => new Response(null, { status }), async () => {
+   await assert.rejects(geo.searchAddresses('Recife'), message);
+  });
+ }
+ await withGeoapify(async url => { throw new Error(url); }, async () => {
+  await assert.rejects(geo.searchAddresses('Recife'), error => /indisponível/.test(error.message) && !error.message.includes('fixture-key'));
+ });
+ for (const data of [{ features: [] }, collection(point([-34, 91], { formatted: 'Inválido' }))]) {
+  await withGeoapify(async () => Response.json(data), async () => {
+   await assert.rejects(geo.searchAddresses('Recife'), /Resposta de endereços inválida/);
+  });
+ }
+});
+
+test('Geoapify autocomplete forwards cancellation to fetch', async () => {
+ const controller = new AbortController();
+ await withGeoapify(async (_url, { signal }) => new Promise((_resolve, reject) => {
+  signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+ }), async () => {
+  const pending = geo.searchAddresses('Recife', controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /cancelada/);
+ });
+});
+
+test('shared route geometry converts GeoJSON to Leaflet order and rejects invisible routes', () => {
+ const { routeGeometry } = load('src/features/map/services/routeGeometry.js');
+ const route = { distance: 2000, duration: 500, geometry: { type: 'LineString', coordinates: [[-34.88, -8.05], [-34.87, -8.06]] } };
+ assert.deepEqual(routeGeometry(route), [[-8.05, -34.88], [-8.06, -34.87]]);
+ for (const coordinates of [[], [[-34.88, -8.05]], [[-34.88, -8.05], [-34.88, -8.05]], [[-34.88, -8.05], [0, 91]]]) {
+  assert.throws(() => routeGeometry({ ...route, geometry: { ...route.geometry, coordinates } }));
+ }
+});
+
+test('precipitation uses metric model accumulation, UTC epochs and Recife display time', async () => {
+ const { getCurrentPrecipitation, precipitationDetails } = load('src/features/dashboard/services/weatherService.js');
+ const originalFetch = globalThis.fetch;
+ const originalNow = Date.now;
+ const validAt = Date.parse('2026-11-10T01:45:00Z');
+ Date.now = () => validAt + 60000;
+ const data = { current_units: { precipitation: 'mm', time: 'unixtime', interval: 'seconds' }, current: { time: validAt / 1000, interval: 900, precipitation: 0 } };
+ globalThis.fetch = async (url, options) => {
+  const params = new URL(url).searchParams;
+  for (const [key, value] of Object.entries({
+   latitude: '-8.05428', longitude: '-34.8813', current: 'precipitation',
+   precipitation_unit: 'mm', timezone: 'America/Recife', timeformat: 'unixtime',
+  })) assert.equal(params.get(key), value);
+  assert.equal(options.cache, 'no-store');
+  return new Response(JSON.stringify(data));
+ };
+ try {
+  const reading = await getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true });
+  assert.deepEqual(reading, { amountMm: 0, validAt, intervalSeconds: 900 });
+  assert.deepEqual(precipitationDetails(reading, validAt + 1000), { period: '15 min', time: '09/11/2026, 22:45', stale: false });
+  assert.equal(precipitationDetails(reading, validAt + 1800000).stale, true);
+  data.current.time = validAt / 1000 + 3600;
+  await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
+  data.current.time = validAt / 1000;
+  data.current_units.time = 'iso8601';
+  await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
+  data.current_units.time = 'unixtime';
+  data.current.time = undefined;
+  await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
+ } finally {
+  globalThis.fetch = originalFetch;
+  Date.now = originalNow;
+ }
+});
+
+test('Geoapify shares an admission limit and honors a provider cooldown', () => {
+ const { createGeocodingRateGate } = load('src/features/map/services/geocodingRateGate.js');
+ let now = Date.parse('2026-11-09T12:00:00Z');
+ const gate = createGeocodingRateGate(() => now);
+ for (let i = 0; i < 5; i++) assert.equal(gate.claim(), true);
+ assert.equal(gate.claim(), false);
+ now += 1000;
+ assert.equal(gate.claim(), true);
+ gate.coolDown('10');
+ now += 9999;
+ assert.equal(gate.claim(), false);
+ now += 1;
+ assert.equal(gate.claim(), true);
+ gate.coolDown(new Date(now + 15000).toUTCString());
+ now += 14999;
+ assert.equal(gate.claim(), false);
+ now += 1;
+ assert.equal(gate.claim(), true);
+});
+
+test('OSRM validates input and decoded GeoJSON before returning a route on either platform', async () => {
+ const { getDrivingRoute } = load('src/features/map/services/routingService.js');
+ const originalFetch = globalThis.fetch;
+ let calls = 0;
+ let coordinates = [[-34.88, -8.05], [-34.87, -8.06]];
+ globalThis.fetch = async url => {
+  calls++;
+  const request = new URL(url);
+  assert.equal(request.pathname.split('/').at(-1), '-34.88,-8.05;-34.87,-8.06');
+  return Response.json({ code: 'Ok', routes: [{ distance: 1234, duration: 500, geometry: { type: 'LineString', coordinates } }] });
+ };
+ try {
+  await assert.rejects(getDrivingRoute([91, 0], [-8.06, -34.87]), /inválidas/);
+  assert.equal(calls, 0);
+  assert.deepEqual((await getDrivingRoute([-8.05, -34.88], [-8.06, -34.87])).positions, [[-8.05, -34.88], [-8.06, -34.87]]);
+  coordinates = [[-34.88, -8.05], [-34.87, 91]];
+  await assert.rejects(getDrivingRoute([-8.05, -34.88], [-8.06, -34.87]), /inválidas/);
+ } finally { globalThis.fetch = originalFetch; }
+});
+
+test('local reports validate stored records without overwriting corrupt data or persisting extra fields', async () => {
+ data.set('floody_reports', '[null]');
+ await assert.rejects(reports.listReports(), /Dados de relatos locais inválidos/);
+ await assert.rejects(reports.createReport(report), /Dados de relatos locais inválidos/);
+ assert.equal(data.get('floody_reports'), '[null]');
+ data.delete('floody_reports');
+ const longLocation = 'Endereço do provedor, '.repeat(30) + 'Recife';
+ await reports.createReport({ ...report, location_label: longLocation, unexpected: 'private fixture', status: 'Aprovado', description: ' Observação ' });
+ const [saved] = await reports.listReports();
+ assert.equal(saved.status, 'Pendente');
+ assert.equal(saved.description, 'Observação');
+ assert.equal(saved.location_label, longLocation);
+ assert.equal('unexpected' in saved, false);
+});
+
+test('map tile URL validation and credits follow the effective provider', () => {
+ const { tileSource } = load('src/features/map/services/tileSource.js');
+ for (const url of ['http://host/{z}/{x}/{y}', 'https://user:pass@host/{z}/{x}/{y}', 'https://host/no-template']) {
+  assert.equal(tileSource(url), null);
+ }
+ assert.match(tileSource('https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png').attribution, /CARTO/);
+ assert.match(tileSource('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').attribution, /Vantor/);
+ assert.doesNotMatch(tileSource('https://custom.example/{z}/{x}/{y}.png').attribution, /CARTO|Esri/);
+});
+
+test('invalid catalog and stored vehicle shapes fail safely', async () => {
+ const { listVehicleMakes, listVehicleModels } = load('src/features/profile/services/vehicleCatalogService.js');
+ const originalFetch = globalThis.fetch;
+ globalThis.fetch = async url => Response.json(url.endsWith('/marcas') ? [{ codigo: 21, nome: 'Fiat' }] : { modelos: null });
+ try {
+  assert.deepEqual(await listVehicleMakes(), [{ codigo: '21', nome: 'Fiat' }]);
+  await assert.rejects(listVehicleModels('21'), /catálogo de veículos inválida/);
+  data.set('floody_vehicles', '[null]');
+  await assert.rejects(users.listVehicles(), /Dados de veículos locais inválidos/);
+  await assert.rejects(users.createVehicle({ make: 'Fiat', model: 'Uno', ground_clearance_cm: 17 }), /Dados de veículos locais inválidos/);
+  assert.equal(data.get('floody_vehicles'), '[null]');
+ } finally { globalThis.fetch = originalFetch; }
+});
+
+test('an unsafe cached official-alert URL is rejected during a provider outage', async () => {
+ const modulePath = 'src/features/alerts/services/alertService.js';
+ cache.delete(path.resolve(modulePath));
+ const fresh = load(modulePath);
+ const snapshot = fresh.normalizeAlertFeed(feedFixture(), Date.now());
+ snapshot.alerts[0].url = 'https://user:password@radarmeteorologico.com.br/alertas/pe/123';
+ data.set('floody_official_alerts_v1', JSON.stringify(snapshot));
+ const originalFetch = globalThis.fetch;
+ globalThis.fetch = async () => new Response(null, { status: 503 });
+ try {
+  const result = await fresh.getAlertFeed();
+  assert.equal(result.snapshot, null);
+  assert.match(result.error, /indisponível/);
+ } finally { globalThis.fetch = originalFetch; }
+});
+
+test('native navigation and feature icon names have bundled Material Symbol images', () => {
+ const component = fs.readFileSync('src/components/native/MaterialIcon.native.js', 'utf8');
+ const assets = [...component.matchAll(/import (\w+) from '.*assets\/material-symbols\/(\w+)\.png'/g)];
+ const names = assets.map(([, binding, file]) => {
+  assert.equal(binding, file);
+  const png = fs.readFileSync(`assets/material-symbols/${file}.png`);
+  assert.equal(png.readUInt32BE(0), 0x89504e47);
+  assert.equal(png.readUInt32BE(16), 96);
+  assert.equal(png.readUInt32BE(20), 96);
+  assert.equal(png[25], 6); // Truecolor with alpha, used for theme tinting.
+  return binding;
+ });
+ for (const screen of ['App.native.js', 'features/dashboard/DashboardScreen.native.js', 'features/map/MapScreen.native.js', 'features/reports/screens/ReportScreen.native.js', 'features/profile/VehiclesScreen.native.js']) {
+  const source = fs.readFileSync(`src/${screen}`, 'utf8');
+  const references = [...source.matchAll(/(?:icon: '|icon="|<MaterialIcon name=")(\w+)|icon=\{theme === 'dark' \? '(\w+)' : '(\w+)'\}/g)]
+   .flatMap(match => match.slice(1).filter(Boolean));
+  assert.ok(references.length > 0, screen);
+  references.forEach(name => assert.ok(names.includes(name), `${screen}: missing ${name}`));
+ }
 });

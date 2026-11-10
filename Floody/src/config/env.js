@@ -2,7 +2,7 @@
 export const env = {
   alertsUrl: process.env.EXPO_PUBLIC_ALERTS_URL || 'https://radarmeteorologico.com.br/api/v1/alertas',
   weatherUrl: process.env.EXPO_PUBLIC_WEATHER_URL || 'https://api.open-meteo.com/v1/forecast',
-  geocodingUrl: process.env.EXPO_PUBLIC_GEOCODING_URL || 'https://nominatim.openstreetmap.org',
+  geoapifyApiKey: process.env.EXPO_PUBLIC_GEOAPIFY_API_KEY || '',
   routingUrl: process.env.EXPO_PUBLIC_ROUTING_URL || 'https://router.project-osrm.org',
   vehicleCatalogUrl: process.env.EXPO_PUBLIC_VEHICLE_CATALOG_URL || 'https://parallelum.com.br/fipe/api/v1',
   mapTilesLight: process.env.EXPO_PUBLIC_MAP_TILES_LIGHT || 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
