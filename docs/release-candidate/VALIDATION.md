@@ -2,6 +2,40 @@
 
 November 9, 2026. Commands below ran from `Floody/` unless noted. Test data was confined to isolated Playwright browser contexts. External probes used only public Recife coordinates or public catalog/feed endpoints.
 
+## Current hardening batch
+
+| Check | Observed result |
+| --- | --- |
+| `npm.cmd test` | **27/27 passed.** Includes shared OSRM geometry and bounds validation, Geoapify admission and cooldown, modeled precipitation metadata and Recife time, corrupt local storage, alert link validation, FIPE response validation and bundled native icons. |
+| `npm.cmd run check`, `git diff --check` | Passed. Git reported line-ending normalization warnings. |
+| `npm.cmd audit --omit=dev` | 0 known production dependency vulnerabilities reported. |
+| `node scripts/web-regression.cjs` | Passed in Edge on local Expo. Verified address selection and failures, 429 cooldown and no Nominatim traffic, stable Recife button order and geometry at 320, 390 and 1366 px, foreground polling, stale weather, a visible fitted route before delayed weather, geometry updates and clearing, and explicit GPS watch start and teardown on leaving the map or hiding the page. |
+| `node scripts/web-regression.cjs --live` | Passed. A real OSRM response rendered as a 63-position route. This run used fixture geocoding and weather. |
+| `node ../docs/release-candidate/capture-web.cjs` | Passed in Edge at 1440 × 900 light and 390 × 844 dark. Guest entry, dashboard, navigation, keyboard selection, map and route, report save, garage save and reload all passed. Satellite failure selected `Ruas` and kept the fallback notice. Pending reports stayed off the map and two concurrent tab saves survived. Ten new PNGs went to ignored `Floody/.expo/hardening-screenshots/`. The desktop and mobile map images were inspected for route visibility, layout and attribution. |
+| `node node_modules/expo/bin/cli export --platform all --max-workers 2 --output-dir .expo/hardening-validation` | Passed for web and Android/iOS Hermes, with Google Sans Flex and all 13 native Material Symbol assets. Metro reported unused Leaflet CSS icon URL warnings. The app uses SVG circle markers and its own layer controls. |
+| Native map HTML harness in Edge | Passed. The embedded Leaflet document sent ready and tile-failure messages, displayed Esri credits, and drew, fitted and cleared a route with a simulated WebView bridge. Tile requests were blocked for this harness. No device runtime was exercised. |
+| Credential and branch check | Compared the configured Geoapify value in memory against tracked and proposed new paths. No matches for that value or the checked private-key, GitHub-token or AWS-key signatures. The real key remains in ignored `Floody/.env.local`. No files are staged. Local and remote feature heads were both `dd2010dc471bf74d69f27878364b1f75a9c68b11` before hardening. |
+
+The browser fixture and export runs used `EXPO_NO_DOTENV=1` with a dummy Geoapify key. The screenshot smoke replays one live OSRM route and loads street tiles. It uses fixtures for geocoding, alerts, precipitation and FIPE, and fictional report and garage inputs. The GPS fixture needed its clock advanced between journeys to account for the client’s rolling geocoding window. The browser regression also checks application console errors. It exposed the malformed garage SVG, which was corrected. Expected failed resource requests from deliberately unavailable providers are excluded from that assertion. One sandboxed Edge launch closed before navigation, and sandboxed Hermes exited with code 6. The local reruns with permission to launch the binaries succeeded.
+
+### Live checks during hardening
+
+| Provider | Observed result |
+| --- | --- |
+| Geoapify | Six HTTP 200 responses in Edge with the configured local key. Verified autocomplete for Avenida Boa Viagem, Recife Antigo and Avenida Agamenon Magalhães, an explicit forward lookup for Rua da Aurora, 225, and GPS reverse lookup for a public Recife location. Underlying sources were OpenStreetMap and OpenAddresses. A selected Marco Zero suggestion rendered a live OSRM route. No credentials or authenticated URLs were logged. |
+| OSRM | Live routing drew a 63-position LineString in Edge. Deterministic browser tests covered malformed geometry, provider errors and slow destination weather. |
+| Open-Meteo | The app adapter accepted 0 mm for a 900-second modeled interval ending at 21:00 on November 9 in Recife and classified it as fresh at probe time. |
+| RadarMeteorológico / INMET | App adapter accepted six alerts before regional filtering. This is a feed availability check. |
+| Parallelum FIPE | App adapter returned 108 car makes and three models for the first make. Local vehicle save and reload used the browser fixture. |
+
+No Android device, iPhone or simulator was available. Native keyboard, gestures, permission prompts, accessibility and tile HTTP identity/cache remain open. These results support the controlled web demo. Provider permissions and capacity for public use remain in [the provider review](PROVIDERS.md).
+
+### Final demo rehearsal
+
+The [demo guide](../../DEMO_GUIDE.md) was verified with a clean `npm.cmd ci` and the Leaflet postinstall in an isolated directory. The desktop walkthrough started with `npm.cmd run web -- --localhost` on port 18572 and used the existing ignored Geoapify configuration. It verified both Recife shortcuts, the named public route, a pending fictional report at a simulated public GPS position, and a saved garage entry. Open-Meteo, RadarMeteorológico, OpenStreetMap tiles, Geoapify forward and reverse lookup, OSRM, and FIPE returned HTTP 200 during that walkthrough. The final rerun also passed all 27 tests, static checks, web and native exports, Playwright fixture and live routing tests, and the desktop light and mobile dark smoke tests.
+
+## Earlier release-candidate evidence
+
 | Command or run | Result |
 | --- | --- |
 | `npm.cmd test` | Pass, 18 tests. Covered local persistence, validation, moderation denial, external error/cancellation, official alert normalization and caching, geographic bounds, web route geometry, model precipitation units/time, and bundled native icons. |

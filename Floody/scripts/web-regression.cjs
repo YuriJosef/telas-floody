@@ -23,11 +23,30 @@ const endpoints = {
 async function run() {
  const browser = await chromium.launch({ executablePath: process.env.FLOODY_BROWSER_EXECUTABLE });
  try {
-  const page = await browser.newPage({ viewport: { width: 1366, height: 850 } });
+  const page = await browser.newPage({ viewport: { width: 1366, height: 850 },
+   permissions: ['geolocation'], geolocation: { latitude: -8.05428, longitude: -34.8813 } });
   page.setDefaultTimeout(15000);
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  if (!live) await page.clock.install({ time: now });
+  page.on('console', message => {
+   if (message.type() === 'error' && !message.text().startsWith('Failed to load resource:')) {
+    errors.push(message.text());
+   }
+  });
+  if (!live) {
+   await page.clock.install({ time: now });
+   await page.addInitScript(() => {
+    window.auditGPS = { starts: 0, stops: 0 };
+    Object.defineProperties(navigator.geolocation, {
+     watchPosition: { configurable: true, value: success => {
+      const id = ++window.auditGPS.starts;
+      queueMicrotask(() => success({ coords: { latitude: -8.055, longitude: -34.882 } }));
+      return id;
+     } },
+     clearWatch: { configurable: true, value: () => { window.auditGPS.stops++; } },
+    });
+   });
+  }
   let routeMode = 'valid';
   let weatherMode = 'valid';
   let delayDestinationWeather = false;
@@ -52,7 +71,7 @@ async function run() {
     assert.equal(params.get('timeformat'), 'unixtime');
     if (delayDestinationWeather) await new Promise(resolve => setTimeout(resolve, 2200));
     if (weatherMode === 'failed') return route.fulfill({ status: 503 });
-    return json({ current_units: { precipitation: 'mm' }, current: {
+    return json({ current_units: { precipitation: 'mm', time: 'unixtime', interval: 'seconds' }, current: {
      precipitation: 3.5, interval: 900, time: (validAt - (weatherMode === 'stale' ? 3600000 : 0)) / 1000,
     } });
    }
@@ -179,11 +198,19 @@ async function run() {
    assert.equal(await page.getByRole('option', { name: 'Endereço antigo' }).count(), 0);
    await search.fill('Cota esgotada');
    await page.getByText(/Limite de consultas de endereço atingido/).waitFor();
+   const beforeCooldown = geocodeCalls.length;
    await search.press('Enter');
    await reading.getByRole('alert').filter({ hasText: /Limite de consultas/ }).waitFor();
+   assert.equal(geocodeCalls.length, beforeCooldown, '429 cooldown also covers explicit search');
+   await page.clock.fastForward(31000);
   }
 
   await button('Mapa').click();
+  if (!live) {
+   const weatherBefore = weatherCalls.length;
+   await page.clock.fastForward(61000);
+   assert.equal(weatherCalls.length, weatherBefore, 'Dashboard must not poll while viewing the map');
+  }
   const planner = button('Planejar rota');
   if (await planner.getAttribute('aria-expanded') === 'false') await planner.click();
   const destination = page.getByRole('combobox', { name: 'Endereço de destino' });
@@ -252,7 +279,36 @@ async function run() {
    await plan('Destino inválido de teste');
    await page.getByText(/Informe uma origem e um destino válidos/).waitFor();
    assert.equal(await line.count(), 0);
-   console.log('Deterministic route, camera bounds, Recife layout, refresh and precipitation labels passed.');
+   // Start a separate GPS journey outside the previous address-admission window.
+   await page.clock.fastForward(1100);
+   await button('Usar minha localização').click();
+   await page.getByText('Posição obtida para a origem.').waitFor();
+   await plan('Destino de teste A');
+   await visibleRoute();
+   await page.locator('.route-result time').waitFor();
+   assert.deepEqual(await page.evaluate(() => window.auditGPS), { starts: 0, stops: 0 });
+   await button('Acompanhar posição').click();
+   await page.getByText(/Acompanhando sua posição neste mapa/).waitFor();
+   await button('Garagem').click();
+   await page.waitForFunction(() => window.auditGPS.stops === 1);
+   await button('Mapa').click();
+   assert(await button('Acompanhar posição').isVisible());
+   assert.equal(await page.evaluate(() => window.auditGPS.starts), 1);
+   await button('Acompanhar posição').click();
+   await page.getByText(/Acompanhando sua posição neste mapa/).waitFor();
+   await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+   });
+   await page.waitForFunction(() => window.auditGPS.stops === 2);
+   await page.evaluate(() => {
+    delete document.visibilityState;
+    document.dispatchEvent(new Event('visibilitychange'));
+   });
+   assert(await button('Acompanhar posição').isVisible());
+   await page.clock.fastForward(1800000);
+   await page.locator('.route-result').getByText(/estimativa desatualizada/).waitFor();
+   console.log('Deterministic route, weather polling and freshness, Recife layout, and GPS start/stop checks passed.');
   }
   assert.deepEqual(errors, []);
   assert.equal(legacyCalls, 0, 'No requests to the retired public geocoder');

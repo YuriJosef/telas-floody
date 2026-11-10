@@ -8,7 +8,7 @@ async function capture() {
  const browser = await chromium.launch({ executablePath: process.env.FLOODY_BROWSER_EXECUTABLE });
  try {
   const fs=require('node:fs'),path=require('node:path');
-  const dir=path.resolve('../docs/release-candidate/screenshots');
+  const dir=path.resolve(process.env.FLOODY_SCREENSHOT_DIR || '../docs/release-candidate/screenshots');
   fs.mkdirSync(dir,{recursive:true});
   const fixedTime=Date.parse('2026-11-09T21:45:00Z');
   const {execFileSync}=require('node:child_process');
@@ -26,11 +26,11 @@ async function capture() {
       page.setDefaultTimeout(15000);
       const errors=[];page.on('pageerror',e=>errors.push(e.message));
       let routeCalls=0,weatherCalls=[],satelliteBlocked=false;
-      await page.route('**/*', async r=>{
+      await context.route('**/*', async r=>{
         const u=new URL(r.request().url());
         if(u.origin===url || u.hostname==='tile.openstreetmap.org')return r.continue();
         const json=body=>r.fulfill({json:body,headers:{'access-control-allow-origin':'*'}});
-        if(u.hostname==='api.open-meteo.com'){weatherCalls.push([u.searchParams.get('latitude'),u.searchParams.get('longitude')]);return json({current_units:{precipitation:'mm'},current:{precipitation:1.2,time:fixedTime/1000,interval:900}});}
+        if(u.hostname==='api.open-meteo.com'){weatherCalls.push([u.searchParams.get('latitude'),u.searchParams.get('longitude')]);return json({current_units:{precipitation:'mm',time:'unixtime',interval:'seconds'},current:{precipitation:1.2,time:fixedTime/1000,interval:900}});}
         if(u.hostname==='radarmeteorologico.com.br')return json({alertas:[]});
         if(u.hostname==='router.project-osrm.org'){routeCalls++;return json(livePayload);}
         if(u.hostname==='server.arcgisonline.com'){satelliteBlocked=true;return r.abort();}
@@ -108,10 +108,13 @@ async function capture() {
       assert.equal(await line.count(),0);
       // Test satellite fallback separately without including it in demo screenshots.
       if(platform==='desktop'){
-        await button('Satélite').click();await page.waitForFunction(()=>document.querySelector('.leaflet-tile-loaded')?.src.includes('tile.openstreetmap.org'));
+        await button('Satélite').click();
+        await page.getByText('Satélite indisponível. Exibindo mapa de ruas.').waitFor();
+        await page.waitForFunction(()=>document.querySelector('.leaflet-tile-loaded')?.src.includes('tile.openstreetmap.org'));
         assert(satelliteBlocked);
-        assert.equal(await button('Satélite').getAttribute('aria-pressed'),'true');
-        console.log('Confirmed satellite fallback retains selected Satélite label');
+        assert.equal(await button('Satélite').getAttribute('aria-pressed'),'false');
+        assert.equal(await button('Ruas').getAttribute('aria-pressed'),'true');
+        console.log('Verified satellite fallback selects Ruas and announces the fallback');
       }
       await button('Relatar').click();
       const save=button('Salvar relato local');
@@ -125,7 +128,12 @@ async function capture() {
       await page.getByRole('heading',{name:'Relato salvo neste dispositivo'}).waitFor();
       assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('floody_reports'))[0].status),'Pendente');
       await button('Voltar ao painel').click();
-      assert.equal(await page.getByText(/TESTE DE APRESENTAÇÃO/).count(),0);
+      const pending=page.locator('.report-row').filter({hasText:'Marco Zero (teste)'});
+      await pending.getByText(/Pendente/).waitFor();
+      await pending.locator('.report-disclosure').click();
+      assert(await pending.getByText(/TESTE DE APRESENTAÇÃO/).isVisible());
+      await button('Mapa').click();
+      assert.equal(await page.locator('.floody-report-marker').count(),0);
       await button('Garagem').click();
       await reach(button('Salvar veículo'));
       await page.getByLabel('Marca',{exact:true}).selectOption('21');
@@ -138,6 +146,28 @@ async function capture() {
       assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('floody_reports')).length),1);
       assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
       assert.deepEqual(errors,[]);
+      if(platform==='desktop'){
+        const other=await context.newPage();
+        try {
+          await other.goto(url,{waitUntil:'domcontentloaded'});
+          await other.getByRole('button',{name:'Continuar no modo local'}).click();
+          async function prepare(target, description){
+            await target.getByRole('button',{name:'Relatar',exact:true}).click();
+            await target.getByRole('button',{name:'Usar minha localização'}).click();
+            await target.getByText('Posição obtida para este relato.').waitFor();
+            await target.getByLabel('Descrição').fill(description);
+          }
+          await Promise.all([prepare(page,'Teste concorrente A'),prepare(other,'Teste concorrente B')]);
+          await Promise.all([page,other].map(async target=>{
+            await target.getByRole('button',{name:'Salvar relato local'}).click();
+            await target.getByRole('heading',{name:'Relato salvo neste dispositivo'}).waitFor();
+          }));
+          const descriptions=await page.evaluate(()=>JSON.parse(localStorage.getItem('floody_reports')).map(r=>r.description));
+          assert.equal(descriptions.length,3);
+          assert(descriptions.includes('Teste concorrente A')&&descriptions.includes('Teste concorrente B'));
+          console.log('Verified concurrent local report saves across two browser tabs');
+        } finally {await other.close();}
+      }
       console.log(platform,theme,'guest/nav/scroll/keyboard/weather/route/report/garage/reload verified');
     }finally{await context.close();}
   }

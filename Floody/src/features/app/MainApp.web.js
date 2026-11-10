@@ -14,11 +14,13 @@ import ModerationScreen from '../../features/reports/screens/ModerationScreen';
 import { createVehicle, listFavoriteReportIds, listVehicles, setFavoriteReport } from '../../features/profile/services/userDataService';
 import { getCurrentPrecipitation, WEATHER_REFRESH_MS } from '../../features/dashboard/services/weatherService';
 import { GeocodingError, hasAddressQuery, resolveAddress, reverseGeocode } from '../../features/map/services/geocodingService';
-import { webRouteGeometry } from '../map/services/webRouteGeometry';
+import { tileSource } from '../map/services/tileSource';
 import { getDrivingRoute } from '../../features/map/services/routingService';
 import { listVehicleMakes, listVehicleModels } from '../../features/profile/services/vehicleCatalogService';
 
 import { useLocation } from '../../hooks/useLocation';
+import { useForeground } from '../../hooks/useForeground';
+import { useLatestRequest } from '../../hooks/useLatestRequest';
 
 import InlineAlert from '../../components/feedback/InlineAlert';
 
@@ -33,7 +35,7 @@ L.Icon.Default.mergeOptions({
 // Ícones Vetoriais (SVG)
 
 import Icons from '../../components/icons/Icons';
-import { LOCAL_AREA_PROFILES, normalizeText } from '../dashboard/indicators';
+import { LOCAL_AREA_PROFILES } from '../dashboard/indicators';
 
 function getExactPosition(getCurrentLocation) {
   if (typeof navigator !== 'undefined' && navigator.geolocation?.getCurrentPosition) {
@@ -81,6 +83,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   // Mapa de Calor Toggle
   const [mapView, setMapView] = useState('flood');
   const [mapTilesUnavailable, setMapTilesUnavailable] = useState(false);
+  const [satelliteFallback, setSatelliteFallback] = useState(false);
   const [routePanelCollapsed, setRoutePanelCollapsed] = useState(() => typeof window === 'undefined' || window.innerWidth < 960);
   
   // Rota e Navegação Ao Vivo
@@ -95,6 +98,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [loadingGPS, setLoadingGPS] = useState(false);
   
   const [isNavigating, setIsNavigating] = useState(false);
+  const [trackingActive, setTrackingActive] = useState(false);
 
   useEffect(() => {
     setIsMounted(true);
@@ -103,6 +107,8 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   // FIPE States
   const [marcas, setMarcas] = useState([]);
   const [catalogError, setCatalogError] = useState('');
+  const [loadingMakes, setLoadingMakes] = useState(false);
+  const [savingVehicle, setSavingVehicle] = useState(false);
   const [catalogModels, setCatalogModels] = useState(null);
   const [marcaSelecionada, setMarcaSelecionada] = useState({ codigo: '', nome: '' });
   const currentModels = catalogModels?.make === marcaSelecionada ? catalogModels : null;
@@ -112,7 +118,11 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [alturaCarro, setAlturaCarro] = useState('');
 
   const defaultCenter = [-8.05428, -34.8813];
-  const { getCurrentLocation, watchLocation } = useLocation();
+  const { getCurrentLocation } = useLocation();
+  const foreground = useForeground();
+  const { start: startRouteRequest, cancel: cancelRouteRequest } = useLatestRequest();
+  const { start: startWeatherRequest, cancel: cancelWeatherRequest } = useLatestRequest();
+  const { start: startReportLocation, cancel: cancelReportLocation } = useLatestRequest();
 
   useEffect(() => {
     if (user.tipo === 'admin' && activeTab !== 'admin_reportes') setActiveTab('admin_reportes');
@@ -120,10 +130,12 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   }, [activeTab, user.tipo]);
   
   const weatherLocationRef = useRef({ coords: [-8.05428, -34.8813], name: 'Recife, PE' });
-  const weatherRequestRef = useRef(0);
+  const pendingWeatherRef = useRef(null);
 
   const fetchWeatherForCoords = async (lat, lng, nomeLocal, refresh = false) => {
-    const requestId = ++weatherRequestRef.current;
+    if (refresh && pendingWeatherRef.current && !pendingWeatherRef.current.aborted) return;
+    const signal = startWeatherRequest();
+    pendingWeatherRef.current = signal;
     const locationName = nomeLocal || weatherLocationRef.current?.name;
     weatherLocationRef.current = { coords: [lat, lng], name: locationName };
     if (!refresh) {
@@ -133,33 +145,32 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       setWeatherReading(null);
     }
     try {
-      const precipitation = await getCurrentPrecipitation(lat, lng, { withDetails: true });
-      if (requestId !== weatherRequestRef.current) return;
+      const precipitation = await getCurrentPrecipitation(lat, lng, { withDetails: true, signal });
+      if (signal.aborted) return;
       setWeatherReading(precipitation);
       setWeatherError('');
     } catch {
-      if (requestId === weatherRequestRef.current) {
+      if (!signal.aborted) {
         setWeatherReading(null);
         setWeatherError('Precipitação indisponível. Tente consultar novamente.');
       }
     } finally {
-      if (requestId === weatherRequestRef.current) setLoadingApi(false);
+      if (pendingWeatherRef.current === signal) pendingWeatherRef.current = null;
+      if (!signal.aborted) setLoadingApi(false);
     }
   };
 
   useEffect(() => {
-    fetchWeatherForCoords(-8.05428, -34.8813, 'Recife, PE');
-
-    const liveTimer = setInterval(() => {
-      if (!weatherLocationRef.current) return;
-      const { coords, name } = weatherLocationRef.current;
-      fetchWeatherForCoords(coords[0], coords[1], name, true);
-    }, WEATHER_REFRESH_MS);
-
-    return () => {
-      clearInterval(liveTimer);
+    if (!foreground || activeTab !== 'dashboard') return;
+    const refresh = () => {
+      const location = weatherLocationRef.current;
+      if (location) fetchWeatherForCoords(...location.coords, location.name, true);
+      else setLoadingApi(false);
     };
-  }, []);
+    refresh();
+    const timer = setInterval(refresh, WEATHER_REFRESH_MS);
+    return () => { clearInterval(timer); cancelWeatherRequest(); };
+  }, [foreground, activeTab, cancelWeatherRequest]);
 
   const toggleFavorito = (id, e) => {
     e.stopPropagation();
@@ -186,15 +197,15 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       fetchWeatherForCoords(...selected.coords, query);
       return;
     }
-    const requestId = ++weatherRequestRef.current;
+    const signal = startWeatherRequest();
     weatherLocationRef.current = null;
     setLoadingApi(true);
     setWeatherReading(null);
     setWeatherError('');
     setCidadeAtualNome(query);
     try {
-      const coords = await resolveAddress(query);
-      if (requestId !== weatherRequestRef.current) return;
+      const coords = await resolveAddress(query, signal);
+      if (signal.aborted) return;
       if (!coords) {
         setWeatherError('Local não encontrado. Confira o endereço ou escolha um dos locais de Recife.');
         setLoadingApi(false);
@@ -203,7 +214,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       selectedCentralAddressRef.current = { name: query, coords };
       fetchWeatherForCoords(...coords, query);
     } catch (error) {
-      if (requestId !== weatherRequestRef.current) return;
+      if (signal.aborted) return;
       setWeatherError(error.message);
       setLoadingApi(false);
     }
@@ -215,21 +226,42 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   };
 
   useEffect(() => {
+    if (!foreground || activeTab !== 'mapa') {
+      setIsNavigating(false);
+      setTrackingActive(false);
+      return;
+    }
+    if (!isNavigating) {
+      setTrackingActive(false);
+      return;
+    }
     let active = true;
-    let subscription = null;
-    if (isNavigating) {
-      watchLocation(setOrigemCoords)
-        .then((nextSubscription) => {
-          if (active) subscription = nextSubscription;
-          else nextSubscription.remove();
-        })
-        .catch((error) => { if (active) { setIsNavigating(false); setReportError(error.message); } });
+    const gps = navigator.geolocation;
+    function stopWithError() {
+      if (!active) return;
+      setIsNavigating(false);
+      setTrackingActive(false);
+      setReportError('Não foi possível acompanhar a posição. Confira a permissão de localização.');
+    }
+    if (!gps) {
+      stopWithError();
+      return;
+    }
+    let id;
+    try {
+      id = gps.watchPosition(({ coords }) => {
+        if (!active) return;
+        setOrigemCoords([coords.latitude, coords.longitude]);
+        setTrackingActive(true);
+      }, stopWithError, { enableHighAccuracy: false, maximumAge: 15000, timeout: 15000 });
+    } catch {
+      stopWithError();
     }
     return () => {
       active = false;
-      subscription?.remove();
+      if (id !== undefined) gps.clearWatch(id);
     };
-  }, [isNavigating]);
+  }, [foreground, activeTab, isNavigating]);
 
   useEffect(() => {
     let active = true;
@@ -260,10 +292,6 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     listFavoriteReportIds()
       .then((ids) => { if (active) setFavoritos(ids); })
       .catch((error) => { if (active) setReportError(error.message); });
-    listVehicleMakes()
-      .then(data => { if (active) setMarcas(data); })
-      .catch(() => { if (active) setCatalogError('Catálogo de veículos indisponível. Tente novamente mais tarde.'); });
-
     return () => {
       active = false;
       unsubscribe();
@@ -271,13 +299,27 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   }, [user.id]);
 
   useEffect(() => {
-    if (!marcaSelecionada.codigo) return;
-    let active = true;
-    listVehicleModels(marcaSelecionada.codigo)
-      .then(items => { if (active) setCatalogModels({ make: marcaSelecionada, items }); })
-      .catch(() => { if (active) setCatalogModels({ make: marcaSelecionada, error: 'Modelos indisponíveis. Selecione a marca novamente para tentar outra vez.' }); });
-    return () => { active = false; };
-  }, [marcaSelecionada]);
+    if (activeTab !== 'veiculos' || marcas.length) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setLoadingMakes(true);
+    setCatalogError('');
+    listVehicleMakes(signal)
+      .then(data => { if (!signal.aborted) { setMarcas(data); setLoadingMakes(false); } })
+      .catch(() => { if (!signal.aborted) setCatalogError('Catálogo de veículos indisponível. Tente novamente mais tarde.'); })
+      .finally(() => { if (!signal.aborted) setLoadingMakes(false); });
+    return () => controller.abort();
+  }, [activeTab, marcas.length]);
+
+  useEffect(() => {
+    if (activeTab !== 'veiculos' || !marcaSelecionada.codigo || currentModels?.items) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    listVehicleModels(marcaSelecionada.codigo, signal)
+      .then(items => { if (!signal.aborted) setCatalogModels({ make: marcaSelecionada, items }); })
+      .catch(() => { if (!signal.aborted) setCatalogModels({ make: marcaSelecionada, error: 'Modelos indisponíveis. Selecione a marca novamente para tentar outra vez.' }); });
+    return () => controller.abort();
+  }, [activeTab, marcaSelecionada, currentModels?.items]);
 
   const handleUseGPS = () => {
     invalidateRoute();
@@ -286,14 +328,16 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       setOrigemCoords(null);
       setOrigemQuery('');
     }
+    const signal = startRouteRequest();
     setLoadingGPS(true);
     getCurrentLocation()
       .then((coords) => {
+        if (signal.aborted) return;
         setOrigemCoords(coords);
         setOrigemQuery('Minha Localização Atual');
       })
-      .catch((error) => setReportError(error.message))
-      .finally(() => setLoadingGPS(false));
+      .catch(() => { if (!signal.aborted) setReportError('Não foi possível obter a posição. Confira a permissão de localização.'); })
+      .finally(() => { if (!signal.aborted) setLoadingGPS(false); });
   };
 
   const handleBuscarRota = async (e) => {
@@ -302,40 +346,45 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     invalidateRoute();
     setReportError('');
     setLoadingRoute(true);
+    const signal = startRouteRequest();
 
     try {
-      const pOrigem = origemCoords || await resolveAddress(origemQuery);
-      const pDestino = destinoCoords || (pOrigem && await resolveAddress(destinoQuery));
+      const pOrigem = origemCoords || await resolveAddress(origemQuery, signal);
+      const pDestino = destinoCoords || (pOrigem && await resolveAddress(destinoQuery, signal));
+      if (signal.aborted) return;
       if (!pOrigem || !pDestino) {
         setReportError('Informe uma origem e um destino válidos para calcular a rota.');
         return;
       }
       setOrigemCoords(pOrigem);
       setDestinoCoords(pDestino);
-      const route = await getDrivingRoute(pOrigem, pDestino);
+      const route = await getDrivingRoute(pOrigem, pDestino, signal);
+      if (signal.aborted) return;
       const result = {
-        positions: webRouteGeometry(route),
+        positions: route.positions,
+        usesGPS: origemQuery === 'Minha Localização Atual',
         distancia: `${(route.distance / 1000).toFixed(1)} km`,
         duracao: `${Math.round(route.duration / 60)} min`,
         origem: origemQuery,
         destino: destinoQuery,
       };
       setRouteInfo(result);
-      setIsNavigating(origemQuery === 'Minha Localização Atual');
       // The route is ready before the optional destination estimate arrives.
-      getCurrentPrecipitation(...pDestino, { withDetails: true }).catch(() => null).then(chuvaDestino => {
-        setRouteInfo(current => current === result ? { ...current, chuvaDestino } : current);
+      getCurrentPrecipitation(...pDestino, { withDetails: true, signal }).catch(() => null).then(chuvaDestino => {
+        if (!signal.aborted) setRouteInfo(current => current === result ? { ...current, chuvaDestino } : current);
       });
     } catch (error) {
+      if (signal.aborted) return;
       setRouteInfo(null);
       setIsNavigating(false);
       setReportError(error instanceof GeocodingError ? error.message : 'Não foi possível obter uma rota viária. Tente novamente mais tarde.');
     } finally {
-      setLoadingRoute(false);
+      if (!signal.aborted) setLoadingRoute(false);
     }
   };
 
   const invalidateRoute = () => {
+    cancelRouteRequest();
     setRouteInfo(null);
     setIsNavigating(false);
   };
@@ -347,24 +396,59 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     setDestinoCoords(null);
   };
 
-  const handleSaveVeiculo = (e) => {
-    e.preventDefault();
-    if (!marcaSelecionada.nome || !modelos.some(model => model.nome === modeloSelecionado) || !alturaCarro) return;
-    createVehicle({ make: marcaSelecionada.nome, model: modeloSelecionado, ground_clearance_cm: Number(alturaCarro) })
-      .then(() => listVehicles())
-      .then((data) => setVeiculos(data.map((vehicle) => ({
-        id: vehicle.id,
-        marca: vehicle.make,
-        modelo: vehicle.model,
-        altura: vehicle.ground_clearance_cm,
-        userId: user.id,
-      }))))
-      .then(() => {
-        setMarcaSelecionada({ codigo: '', nome: '' });
-        setModeloSelecionado('');
-        setAlturaCarro('');
-      })
-      .catch((error) => setReportError(error.message));
+  const handleTabChange = next => {
+    if (activeTab === 'mapa' && next !== 'mapa') {
+      cancelRouteRequest();
+      setLoadingGPS(false);
+      setLoadingRoute(false);
+      setIsNavigating(false);
+      setRouteInfo(current => current && current.chuvaDestino === undefined ? { ...current, chuvaDestino: null } : current);
+    }
+    if (activeTab === 'reportar' && next !== 'reportar') {
+      cancelReportLocation();
+      setLoadingReportGPS(false);
+    }
+    setActiveTab(next);
+  };
+
+  const changeMapLayer = view => {
+    if (view === 'satellite' && !tileSource(env.mapTilesSatellite)) {
+      setMapView('streets');
+      setSatelliteFallback(true);
+      setMapTilesUnavailable(false);
+      return;
+    }
+    setMapView(view);
+    setMapTilesUnavailable(false);
+    setSatelliteFallback(false);
+  };
+
+  const handleTileFailure = () => {
+    if (mapView === 'satellite') {
+      setSatelliteFallback(true);
+      setMapView('streets');
+    }
+    setMapTilesUnavailable(true);
+  };
+
+  const handleSaveVeiculo = async (event) => {
+    event.preventDefault();
+    if (savingVehicle || !marcaSelecionada.nome || !modelos.some(model => model.nome === modeloSelecionado) || !alturaCarro) return;
+    setSavingVehicle(true);
+    setReportError('');
+    try {
+      const data = await createVehicle({ make: marcaSelecionada.nome, model: modeloSelecionado, ground_clearance_cm: Number(alturaCarro) });
+      setVeiculos(data.map(vehicle => ({
+        id: vehicle.id, marca: vehicle.make, modelo: vehicle.model, altura: vehicle.ground_clearance_cm, userId: user.id,
+      })));
+      setMarcaSelecionada({ codigo: '', nome: '' });
+      setModeloSelecionado('');
+      setAlturaCarro('');
+    } catch (error) {
+      setReportError(error.message);
+    } finally {
+      setSavingVehicle(false);
+    }
   };
 
   const handleSaveReporte = async (e) => {
@@ -405,18 +489,21 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   };
 
   const handleReportGPS = () => {
+    const signal = startReportLocation();
     setLoadingReportGPS(true);
     setReportLocationNotice('');
     setReportCoords(null);
     setReportError('');
     getExactPosition(getCurrentLocation)
       .then(async (coords) => {
+        if (signal.aborted) return;
         let address = null;
         try {
-          address = await reverseGeocode(coords[0], coords[1]);
+          address = await reverseGeocode(coords[0], coords[1], signal);
         } catch (error) {
-          setReportLocationNotice(error.message + ' As coordenadas continuam disponíveis para o relato.');
+          if (!signal.aborted) setReportLocationNotice(error.message + ' As coordenadas continuam disponíveis para o relato.');
         }
+        if (signal.aborted) return;
         setFormReporte((current) => ({
           ...current,
           local: address || `Coordenadas ${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
@@ -424,45 +511,40 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
         setReportCoords(coords);
         setReportError('');
       })
-      .catch((error) => setReportError(error.message))
-      .finally(() => setLoadingReportGPS(false));
+      .catch(() => { if (!signal.aborted) setReportError('Não foi possível obter a posição. Confira a permissão de localização.'); })
+      .finally(() => { if (!signal.aborted) setLoadingReportGPS(false); });
   };
 
   const mapTileUrl = theme === 'dark'
     ? env.mapTilesDark
     : env.mapTilesLight;
   const preferredMapTileUrl = mapView === 'satellite' ? env.mapTilesSatellite : mapTileUrl;
-  const normalizedReportError = normalizeText(reportError);
-  const showReportError = reportError
-    && !normalizedReportError.startsWith('servico externo indisponivel')
-    && !normalizedReportError.startsWith('servico externo respondeu com erro');
-
   useEffect(() => {
     setMapTilesUnavailable(false);
-  }, [mapView, theme]);
+  }, [theme]);
 
   const termoPesquisado = filtroTextoZona.trim().toLocaleLowerCase();
   const reportesExibidos = reportes
-    .filter((report) => report.status === 'Aprovado')
+    .filter((report) => report.status === 'Aprovado' || report.status === 'Pendente')
     .filter((report) => !filtroApenasFavoritos || favoritos.includes(report.id))
     .filter((report) => !termoPesquisado || `${report.location_label} ${report.hazard_type} ${report.description}`.toLocaleLowerCase().includes(termoPesquisado));
 
   return (
-    <AppShell user={user} activeTab={activeTab} onTabChange={setActiveTab} theme={theme} onToggleTheme={onToggleTheme} onLogout={onLogout}>
+    <AppShell user={user} activeTab={activeTab} onTabChange={handleTabChange} theme={theme} onToggleTheme={onToggleTheme} onLogout={onLogout}>
         <p className="local-notice">Modo local · Relatos e veículos ficam neste dispositivo.</p>
-        {showReportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
+        {reportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
           <DashboardScreen weatherError={weatherError} buscaCentralQuery={buscaCentralQuery} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} centralAddressSelected={selectedCentralAddressRef.current?.name === buscaCentralQuery} onSelectAddress={selectCentralAddress} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
         )}
 
         {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS */}
         {activeTab === 'mapa' && (
-          <MapScreen activeTab={activeTab} defaultCenter={defaultCenter} destinoCoords={destinoCoords} destinoQuery={destinoQuery} handleBuscarRota={handleBuscarRota} handleCancelRoute={handleCancelRoute} invalidateRoute={invalidateRoute} handleUseGPS={handleUseGPS} isMounted={isMounted} isNavigating={isNavigating} loadingGPS={loadingGPS} loadingRoute={loadingRoute} mapTilesUnavailable={mapTilesUnavailable} mapView={mapView} origemCoords={origemCoords} origemQuery={origemQuery} preferredMapTileUrl={preferredMapTileUrl} reportes={reportes} routeInfo={routeInfo} routePanelCollapsed={routePanelCollapsed} setDestinoCoords={setDestinoCoords} setDestinoQuery={setDestinoQuery} setMapTilesUnavailable={setMapTilesUnavailable} setMapView={setMapView} setOrigemCoords={setOrigemCoords} setOrigemQuery={setOrigemQuery} setRoutePanelCollapsed={setRoutePanelCollapsed} theme={theme} />
+          <MapScreen activeTab={activeTab} defaultCenter={defaultCenter} destinoCoords={destinoCoords} destinoQuery={destinoQuery} handleBuscarRota={handleBuscarRota} handleCancelRoute={handleCancelRoute} invalidateRoute={invalidateRoute} handleUseGPS={handleUseGPS} isMounted={isMounted} isNavigating={isNavigating} trackingActive={trackingActive} onToggleTracking={() => setIsNavigating(value => !value)} satelliteFallback={satelliteFallback} loadingGPS={loadingGPS} loadingRoute={loadingRoute} mapTilesUnavailable={mapTilesUnavailable} mapView={mapView} origemCoords={origemCoords} origemQuery={origemQuery} preferredMapTileUrl={preferredMapTileUrl} reportes={reportes} routeInfo={routeInfo} routePanelCollapsed={routePanelCollapsed} setDestinoCoords={setDestinoCoords} setDestinoQuery={setDestinoQuery} onTileFailure={handleTileFailure} setMapView={changeMapLayer} setOrigemCoords={setOrigemCoords} setOrigemQuery={setOrigemQuery} setRoutePanelCollapsed={setRoutePanelCollapsed} theme={theme} />
         )}
 
         {/* GARAGEM FIPE */}
         {activeTab === 'veiculos' && (
-          <VehiclesScreen catalogError={currentModels?.error || catalogError} loadingModels={loadingModels} alturaCarro={alturaCarro} handleSaveVeiculo={handleSaveVeiculo} marcaSelecionada={marcaSelecionada} marcas={marcas} modeloSelecionado={modeloSelecionado} modelos={modelos} setAlturaCarro={setAlturaCarro} setMarcaSelecionada={setMarcaSelecionada} setModeloSelecionado={setModeloSelecionado} user={user} veiculos={veiculos} />
+          <VehiclesScreen catalogError={currentModels?.error || catalogError} loadingModels={loadingModels} loadingMakes={loadingMakes} savingVehicle={savingVehicle} alturaCarro={alturaCarro} handleSaveVeiculo={handleSaveVeiculo} marcaSelecionada={marcaSelecionada} marcas={marcas} modeloSelecionado={modeloSelecionado} modelos={modelos} setAlturaCarro={setAlturaCarro} setMarcaSelecionada={setMarcaSelecionada} setModeloSelecionado={setModeloSelecionado} user={user} veiculos={veiculos} />
         )}
 
         {/* REPORTAR */}

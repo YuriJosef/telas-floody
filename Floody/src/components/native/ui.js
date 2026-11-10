@@ -1,6 +1,6 @@
 import React, { createContext, useContext } from 'react';
 import MaterialIcon from './MaterialIcon.native';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 // Semantic pairs match the established Floody web palette in App.css.
 const palettes = {
@@ -65,4 +65,10 @@ export function Page({ title, children, centered = false }) {
       {children}
     </ScrollView>
   </KeyboardAvoidingView>;
+}
+
+// Provider URLs are app-defined constants.
+export function ProviderLink({ url, children }) {
+  return <Text accessibilityRole="link" style={{ textDecorationLine: 'underline' }}
+    onPress={() => Linking.openURL(url).catch(() => {})}>{children}</Text>;
 }

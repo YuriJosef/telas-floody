@@ -1,6 +1,6 @@
-export function webRouteGeometry(route) {
+export function routeGeometry(route) {
   const coordinates = route?.geometry?.coordinates;
-  if (route?.geometry?.type !== 'LineString' || !Array.isArray(coordinates) || coordinates.length < 2
+  if (route?.geometry?.type !== 'LineString' || !Array.isArray(coordinates) || coordinates.length < 2 || coordinates.length > 50000
       || !Number.isFinite(route.distance) || route.distance < 0
       || !Number.isFinite(route.duration) || route.duration < 0) {
     throw new Error('Traçado de rota indisponível.');

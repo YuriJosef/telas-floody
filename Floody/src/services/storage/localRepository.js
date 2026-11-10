@@ -3,17 +3,19 @@ let pending = Promise.resolve();
 export async function readList(key) {
   const value = await storage.getItem(key);
   if (!value) return [];
-  const data = JSON.parse(value);
+  let data;
+  try { data = JSON.parse(value); } catch { throw new Error('Dados locais inválidos.'); }
   if (!Array.isArray(data)) throw new Error('Dados locais inválidos.');
   return data;
 }
 // Serialize read-modify-write operations to avoid losing concurrent submissions.
 export function changeList(key, update) {
-  const operation = pending.then(async () => {
+  async function write() {
     const next = update(await readList(key));
     await storage.setItem(key, JSON.stringify(next));
     return next;
-  });
+  }
+  const operation = pending.then(() => storage.runExclusive ? storage.runExclusive(key, write) : write());
   pending = operation.catch(() => {});
   return operation;
 }

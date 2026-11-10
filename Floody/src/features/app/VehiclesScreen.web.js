@@ -1,4 +1,4 @@
-export default function VehiclesScreen({ catalogError, loadingModels, alturaCarro, handleSaveVeiculo, marcaSelecionada, marcas, modeloSelecionado, modelos, setAlturaCarro, setMarcaSelecionada, setModeloSelecionado, user, veiculos }) {
+export default function VehiclesScreen({ catalogError, loadingModels, loadingMakes, savingVehicle, alturaCarro, handleSaveVeiculo, marcaSelecionada, marcas, modeloSelecionado, modelos, setAlturaCarro, setMarcaSelecionada, setModeloSelecionado, user, veiculos }) {
  return (<div className="scrollable-tab garage-page">
             <header className="page-heading compact"><h1>Sua garagem</h1><p>Consulta ao catálogo de veículos. Cadastro salvo neste dispositivo.</p></header>
             {catalogError && <p role="alert" className="alerts-error">{catalogError}</p>}
@@ -6,12 +6,12 @@ export default function VehiclesScreen({ catalogError, loadingModels, alturaCarr
               <form onSubmit={handleSaveVeiculo} className="grid-form">
                 <div className="input-group">
                   <label htmlFor="vehicle-make">Marca</label>
-                  <select id="vehicle-make" required value={marcaSelecionada.codigo} onChange={(e) => {
+                  <select id="vehicle-make" required disabled={loadingMakes} value={marcaSelecionada.codigo} onChange={(e) => {
                     const chosen = marcas.find(m => m.codigo === e.target.value);
                     setMarcaSelecionada({ codigo: chosen?.codigo || '', nome: chosen?.nome || '' });
                     setModeloSelecionado('');
                   }}>
-                    <option value="">Selecione a fabricante...</option>
+                    <option value="">{loadingMakes ? 'Consultando fabricantes…' : 'Selecione a fabricante...'}</option>
                     {marcas.map(m => <option key={m.codigo} value={m.codigo}>{m.nome}</option>)}
                   </select>
                 </div>
@@ -27,7 +27,7 @@ export default function VehiclesScreen({ catalogError, loadingModels, alturaCarr
                   <input id="vehicle-clearance" aria-describedby="clearance-help" required type="number" min="0.1" max="150" step="0.1" placeholder="Ex: 17" value={alturaCarro} onChange={e => setAlturaCarro(e.target.value)} />
                 </div>
                 <p id="clearance-help" className="caption full-width">Consulte a especificação do veículo. Esta medida não indica uma profundidade segura para atravessar água.</p>
-                <button type="submit" className="btn-primary">Salvar veículo</button>
+                <button type="submit" className="btn-primary" disabled={savingVehicle}>{savingVehicle ? 'Salvando…' : 'Salvar veículo'}</button>
               </form>
             </section>
 

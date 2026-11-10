@@ -1,8 +1,11 @@
 import { env } from '../../../config/env';
 import { buildUrl, requestJson } from '../../../services/api/externalClient';
+import { createGeocodingRateGate } from './geocodingRateGate';
 
 const endpoint = 'https://api.geoapify.com/v1/geocode';
 const brazilSearch = { filter: 'countrycode:br', bias: 'proximity:-34.8813,-8.05428' };
+const rateGate = createGeocodingRateGate();
+const quotaMessage = 'Limite de consultas de endereço atingido. Tente novamente mais tarde.';
 
 export class GeocodingError extends Error {}
 
@@ -44,17 +47,20 @@ async function geocode(operation, params, signal) {
   if (!apiKey) {
     throw new GeocodingError('Busca de endereços não configurada. Defina a chave Geoapify em Floody/.env.local.');
   }
+  if (signal?.aborted) throw new GeocodingError('Consulta de endereço cancelada.');
+  if (!rateGate.claim()) throw new GeocodingError(quotaMessage);
   let data;
   try {
     data = await requestJson(buildUrl(`${endpoint}/${operation}`, { ...params, lang: 'pt', format: 'geojson', apiKey }), signal, { cache: 'no-store' });
   } catch (error) {
     // Provider or fetch errors can include the authenticated URL. Surface only safe messages.
+    if (error?.status === 429) rateGate.coolDown(error.retryAfter);
     if (signal?.aborted) throw new GeocodingError('Consulta de endereço cancelada.');
-    if (error.status === 401 || error.status === 403) {
+    if (error?.status === 401 || error?.status === 403) {
       throw new GeocodingError('A Geoapify recusou a consulta. Verifique a chave e suas restrições.');
     }
-    if (error.status === 429) {
-      throw new GeocodingError('Limite de consultas de endereço atingido. Tente novamente mais tarde.');
+    if (error?.status === 429) {
+      throw new GeocodingError(quotaMessage);
     }
     throw new GeocodingError('Busca de endereços indisponível. Tente novamente mais tarde.');
   }

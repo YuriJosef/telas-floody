@@ -38,14 +38,15 @@ export default function VehiclesScreen() {
   useEffect(() => { let active = true; listVehicles().then(data => { if (active) setVehicles(data); }).catch(error => { if (active) setMessage(error.message); }); return () => { active = false; }; }, []);
   useEffect(() => {
     if (!picker) return;
-    let active = true;
-    const request = picker.mode === 'make' ? listVehicleMakes() : listVehicleModels(picker.make.codigo);
+    const controller = new AbortController();
+    const { signal } = controller;
+    const request = picker.mode === 'make' ? listVehicleMakes(signal) : listVehicleModels(picker.make.codigo, signal);
     request.then(items => {
-      if (active) setCatalog({ picker, items });
+      if (!signal.aborted) setCatalog({ picker, items });
     }).catch(() => {
-      if (active) setCatalog({ picker, error: 'Catálogo indisponível. Você ainda pode preencher os dados manualmente.' });
+      if (!signal.aborted) setCatalog({ picker, error: 'Catálogo indisponível. Você ainda pode preencher os dados manualmente.' });
     });
-    return () => { active = false; };
+    return () => controller.abort();
   }, [picker]);
 
   function select(item) {

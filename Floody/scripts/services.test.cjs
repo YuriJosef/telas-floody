@@ -43,6 +43,7 @@ test('vehicle validation and favorites are persistent and deduplicated',async()=
 });
 test('external client requires HTTPS and preserves encoded queries',()=>{
  assert.throws(()=>buildUrl('http://example.com'),/HTTPS/);
+ assert.throws(()=>buildUrl('https://demo:password@example.com'),/credenciais/);
  assert.equal(new URL(buildUrl('https://example.com',{q:'Rua A & B'})).searchParams.get('q'),'Rua A & B');
 });
 test('external errors and cancellation are propagated',async()=>{
@@ -134,7 +135,8 @@ test('native map bridge keeps local report labels inert', () => {
  assert.match(buildMapDocument([-8, -34]), /label\.textContent=marker\.label/);
 });
 
-const geo = load('src/features/map/services/geocodingService.js');
+const geoModule = 'src/features/map/services/geocodingService.js';
+let geo;
 const geoEnv = load('src/config/env.js').env;
 const point = (coordinates, properties) => ({ type: 'Feature', geometry: { type: 'Point', coordinates }, properties });
 const collection = (...features) => ({ type: 'FeatureCollection', features });
@@ -144,6 +146,8 @@ async function withGeoapify(fetch, run, key = 'fixture-key') {
  const originalKey = geoEnv.geoapifyApiKey;
  globalThis.fetch = fetch;
  geoEnv.geoapifyApiKey = key;
+ cache.delete(path.resolve(geoModule));
+ geo = load(geoModule);
  try { await run(); }
  finally { globalThis.fetch = originalFetch; geoEnv.geoapifyApiKey = originalKey; }
 }
@@ -224,20 +228,22 @@ test('Geoapify autocomplete forwards cancellation to fetch', async () => {
  });
 });
 
-test('web route geometry converts GeoJSON to Leaflet order and rejects invisible routes', () => {
- const { webRouteGeometry } = load('src/features/map/services/webRouteGeometry.js');
+test('shared route geometry converts GeoJSON to Leaflet order and rejects invisible routes', () => {
+ const { routeGeometry } = load('src/features/map/services/routeGeometry.js');
  const route = { distance: 2000, duration: 500, geometry: { type: 'LineString', coordinates: [[-34.88, -8.05], [-34.87, -8.06]] } };
- assert.deepEqual(webRouteGeometry(route), [[-8.05, -34.88], [-8.06, -34.87]]);
+ assert.deepEqual(routeGeometry(route), [[-8.05, -34.88], [-8.06, -34.87]]);
  for (const coordinates of [[], [[-34.88, -8.05]], [[-34.88, -8.05], [-34.88, -8.05]], [[-34.88, -8.05], [0, 91]]]) {
-  assert.throws(() => webRouteGeometry({ ...route, geometry: { ...route.geometry, coordinates } }));
+  assert.throws(() => routeGeometry({ ...route, geometry: { ...route.geometry, coordinates } }));
  }
 });
 
 test('precipitation uses metric model accumulation, UTC epochs and Recife display time', async () => {
  const { getCurrentPrecipitation, precipitationDetails } = load('src/features/dashboard/services/weatherService.js');
  const originalFetch = globalThis.fetch;
+ const originalNow = Date.now;
  const validAt = Date.parse('2026-11-10T01:45:00Z');
- const data = { current_units: { precipitation: 'mm' }, current: { time: validAt / 1000, interval: 900, precipitation: 0 } };
+ Date.now = () => validAt + 60000;
+ const data = { current_units: { precipitation: 'mm', time: 'unixtime', interval: 'seconds' }, current: { time: validAt / 1000, interval: 900, precipitation: 0 } };
  globalThis.fetch = async (url, options) => {
   const params = new URL(url).searchParams;
   for (const [key, value] of Object.entries({
@@ -252,11 +258,113 @@ test('precipitation uses metric model accumulation, UTC epochs and Recife displa
   assert.deepEqual(reading, { amountMm: 0, validAt, intervalSeconds: 900 });
   assert.deepEqual(precipitationDetails(reading, validAt + 1000), { period: '15 min', time: '09/11/2026, 22:45', stale: false });
   assert.equal(precipitationDetails(reading, validAt + 1800000).stale, true);
+  data.current.time = validAt / 1000 + 3600;
+  await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
+  data.current.time = validAt / 1000;
+  data.current_units.time = 'iso8601';
+  await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
+  data.current_units.time = 'unixtime';
   data.current.time = undefined;
   await assert.rejects(getCurrentPrecipitation(-8.05428, -34.8813, { withDetails: true }), /indisponível/);
  } finally {
   globalThis.fetch = originalFetch;
+  Date.now = originalNow;
  }
+});
+
+test('Geoapify shares an admission limit and honors a provider cooldown', () => {
+ const { createGeocodingRateGate } = load('src/features/map/services/geocodingRateGate.js');
+ let now = Date.parse('2026-11-09T12:00:00Z');
+ const gate = createGeocodingRateGate(() => now);
+ for (let i = 0; i < 5; i++) assert.equal(gate.claim(), true);
+ assert.equal(gate.claim(), false);
+ now += 1000;
+ assert.equal(gate.claim(), true);
+ gate.coolDown('10');
+ now += 9999;
+ assert.equal(gate.claim(), false);
+ now += 1;
+ assert.equal(gate.claim(), true);
+ gate.coolDown(new Date(now + 15000).toUTCString());
+ now += 14999;
+ assert.equal(gate.claim(), false);
+ now += 1;
+ assert.equal(gate.claim(), true);
+});
+
+test('OSRM validates input and decoded GeoJSON before returning a route on either platform', async () => {
+ const { getDrivingRoute } = load('src/features/map/services/routingService.js');
+ const originalFetch = globalThis.fetch;
+ let calls = 0;
+ let coordinates = [[-34.88, -8.05], [-34.87, -8.06]];
+ globalThis.fetch = async url => {
+  calls++;
+  const request = new URL(url);
+  assert.equal(request.pathname.split('/').at(-1), '-34.88,-8.05;-34.87,-8.06');
+  return Response.json({ code: 'Ok', routes: [{ distance: 1234, duration: 500, geometry: { type: 'LineString', coordinates } }] });
+ };
+ try {
+  await assert.rejects(getDrivingRoute([91, 0], [-8.06, -34.87]), /inválidas/);
+  assert.equal(calls, 0);
+  assert.deepEqual((await getDrivingRoute([-8.05, -34.88], [-8.06, -34.87])).positions, [[-8.05, -34.88], [-8.06, -34.87]]);
+  coordinates = [[-34.88, -8.05], [-34.87, 91]];
+  await assert.rejects(getDrivingRoute([-8.05, -34.88], [-8.06, -34.87]), /inválidas/);
+ } finally { globalThis.fetch = originalFetch; }
+});
+
+test('local reports validate stored records without overwriting corrupt data or persisting extra fields', async () => {
+ data.set('floody_reports', '[null]');
+ await assert.rejects(reports.listReports(), /Dados de relatos locais inválidos/);
+ await assert.rejects(reports.createReport(report), /Dados de relatos locais inválidos/);
+ assert.equal(data.get('floody_reports'), '[null]');
+ data.delete('floody_reports');
+ const longLocation = 'Endereço do provedor, '.repeat(30) + 'Recife';
+ await reports.createReport({ ...report, location_label: longLocation, unexpected: 'private fixture', status: 'Aprovado', description: ' Observação ' });
+ const [saved] = await reports.listReports();
+ assert.equal(saved.status, 'Pendente');
+ assert.equal(saved.description, 'Observação');
+ assert.equal(saved.location_label, longLocation);
+ assert.equal('unexpected' in saved, false);
+});
+
+test('map tile URL validation and credits follow the effective provider', () => {
+ const { tileSource } = load('src/features/map/services/tileSource.js');
+ for (const url of ['http://host/{z}/{x}/{y}', 'https://user:pass@host/{z}/{x}/{y}', 'https://host/no-template']) {
+  assert.equal(tileSource(url), null);
+ }
+ assert.match(tileSource('https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png').attribution, /CARTO/);
+ assert.match(tileSource('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').attribution, /Vantor/);
+ assert.doesNotMatch(tileSource('https://custom.example/{z}/{x}/{y}.png').attribution, /CARTO|Esri/);
+});
+
+test('invalid catalog and stored vehicle shapes fail safely', async () => {
+ const { listVehicleMakes, listVehicleModels } = load('src/features/profile/services/vehicleCatalogService.js');
+ const originalFetch = globalThis.fetch;
+ globalThis.fetch = async url => Response.json(url.endsWith('/marcas') ? [{ codigo: 21, nome: 'Fiat' }] : { modelos: null });
+ try {
+  assert.deepEqual(await listVehicleMakes(), [{ codigo: '21', nome: 'Fiat' }]);
+  await assert.rejects(listVehicleModels('21'), /catálogo de veículos inválida/);
+  data.set('floody_vehicles', '[null]');
+  await assert.rejects(users.listVehicles(), /Dados de veículos locais inválidos/);
+  await assert.rejects(users.createVehicle({ make: 'Fiat', model: 'Uno', ground_clearance_cm: 17 }), /Dados de veículos locais inválidos/);
+  assert.equal(data.get('floody_vehicles'), '[null]');
+ } finally { globalThis.fetch = originalFetch; }
+});
+
+test('an unsafe cached official-alert URL is rejected during a provider outage', async () => {
+ const modulePath = 'src/features/alerts/services/alertService.js';
+ cache.delete(path.resolve(modulePath));
+ const fresh = load(modulePath);
+ const snapshot = fresh.normalizeAlertFeed(feedFixture(), Date.now());
+ snapshot.alerts[0].url = 'https://user:password@radarmeteorologico.com.br/alertas/pe/123';
+ data.set('floody_official_alerts_v1', JSON.stringify(snapshot));
+ const originalFetch = globalThis.fetch;
+ globalThis.fetch = async () => new Response(null, { status: 503 });
+ try {
+  const result = await fresh.getAlertFeed();
+  assert.equal(result.snapshot, null);
+  assert.match(result.error, /indisponível/);
+ } finally { globalThis.fetch = originalFetch; }
 });
 
 test('native navigation and feature icon names have bundled Material Symbol images', () => {

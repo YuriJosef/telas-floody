@@ -19,7 +19,10 @@ export function parseAlertDate(value) {
 }
 const strings = value => Array.isArray(value) ? value.filter(item => typeof item === 'string').map(item => item.trim()).filter(Boolean) : [];
 function detailUrl(value) {
-  try { const url = new URL(value); if (url.protocol === 'https:' && url.hostname === 'radarmeteorologico.com.br') return url.toString(); } catch {}
+  try {
+    const url = new URL(value);
+    if (url.origin === 'https://radarmeteorologico.com.br' && !url.username && !url.password) return url.toString();
+  } catch {}
   return 'https://avisos.inmet.gov.br/';
 }
 export function normalizeAlertFeed(payload, fetchedAt = Date.now()) {
@@ -56,9 +59,11 @@ function validCache(value, now) {
     && Number.isFinite(value.fetchedAt) && value.fetchedAt <= now
     && now - value.fetchedAt <= ALERT_CACHE_MAX_AGE_MS
     && Array.isArray(value.alerts) && value.alerts.every(item => item && typeof item.id === 'string'
+      && typeof item.event === 'string' && typeof item.severity === 'string' && item.url === detailUrl(item.url)
       && Number.isFinite(Date.parse(item.startsAt)) && Number.isFinite(Date.parse(item.endsAt))
       && Array.isArray(item.states) && Array.isArray(item.municipalityCodes)
-      && Array.isArray(item.risks) && Array.isArray(item.instructions));
+      && Array.isArray(item.risks) && item.risks.every(text => typeof text === 'string')
+      && Array.isArray(item.instructions) && item.instructions.every(text => typeof text === 'string'));
 }
 async function collect() {
   const now = Date.now();

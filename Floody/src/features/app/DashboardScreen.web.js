@@ -1,11 +1,11 @@
 import AddressAutocomplete, { GeoapifyAttribution } from '../map/components/AddressAutocomplete.web';
 import OfficialAlertsPanel from '../alerts/components/OfficialAlertsPanel.web';
 import { formatDateTime } from '../../utils/formatters';
-import { precipitationDetails } from '../dashboard/services/weatherService';
+import { usePrecipitationDetails } from '../dashboard/hooks/usePrecipitationDetails';
 import Icons from '../../components/icons/Icons';
 
 export default function DashboardScreen({ weatherError, buscaCentralQuery, cidadeAtualNome, expandedZoneId, favoritos, filtroApenasFavoritos, filtroTextoZona, handleCentralInputChange, handleCentralSearch, loadingApi, nearbyAreas, weatherReading, reportLoading, reportesExibidos, centralAddressSelected, onSelectAddress, setExpandedZoneId, setFiltroApenasFavoritos, setFiltroTextoZona, toggleFavorito }) {
-  const details = weatherReading && precipitationDetails(weatherReading);
+  const details = usePrecipitationDetails(weatherReading);
   return (
     <div className="scrollable-tab dashboard">
       <header className="page-heading">
@@ -31,7 +31,7 @@ export default function DashboardScreen({ weatherError, buscaCentralQuery, cidad
               </>}
             </div>
           </div>
-          <p className="caption">Estimativa do Open-Meteo. Não mede alagamentos nem indica passagem segura.</p>
+          <p className="caption">Estimativa do <a href="https://open-meteo.com/">Open-Meteo</a> · <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. Não mede alagamentos nem indica passagem segura.</p>
           <form className="stack" onSubmit={handleCentralSearch}>
             <AddressAutocomplete label="Consultar outro local" inputLabel="Buscar endereço" placeholder="Rua, bairro e cidade"
               value={buscaCentralQuery} selected={centralAddressSelected} readOnly={loadingApi}
@@ -45,7 +45,7 @@ export default function DashboardScreen({ weatherError, buscaCentralQuery, cidad
         </section>
       </div>
       <section className="reports-panel" aria-labelledby="reports-title">
-        <header className="section-heading"><div><p className="source-label">Neste dispositivo</p><h2 id="reports-title">Relatos locais</h2><p className="caption">Registros locais com status aprovado. Este aplicativo não publica relatos.</p></div>
+        <header className="section-heading"><div><p className="source-label">Neste dispositivo</p><h2 id="reports-title">Relatos locais</h2><p className="caption">Histórico neste navegador. O mapa exibe apenas registros aprovados.</p></div>
           <button className="btn-action-secondary" aria-pressed={filtroApenasFavoritos} onClick={() => setFiltroApenasFavoritos(!filtroApenasFavoritos)}><Icons.Star filled={filtroApenasFavoritos} /> Favoritos</button>
         </header>
         <label className="input-group">Filtrar registros<input aria-label="Filtrar ocorrências" placeholder="Local ou tipo de ocorrência" value={filtroTextoZona} onChange={e => setFiltroTextoZona(e.target.value)} /></label>
@@ -53,10 +53,10 @@ export default function DashboardScreen({ weatherError, buscaCentralQuery, cidad
           ? <div className="empty-state"><Icons.Map /><div><h3>Nenhum registro para exibir</h3><p>Os novos relatos ficam salvos neste dispositivo, com status pendente. A ausência de registros não confirma ausência de risco.</p></div></div>
           : reportesExibidos.map(report => <article className="report-row" key={report.id}>
             <button className="report-disclosure" aria-expanded={expandedZoneId === report.id} onClick={() => setExpandedZoneId(expandedZoneId === report.id ? null : report.id)}>
-              <strong>{report.location_label}</strong><span>{report.hazard_type} · {formatDateTime(report.occurred_at)}</span>
+              <strong>{report.location_label}</strong><span>{report.hazard_type} · {report.status} · {formatDateTime(report.occurred_at)}</span>
             </button>
             <button className="icon-button" aria-label="Favoritar relato" aria-pressed={favoritos.includes(report.id)} onClick={e => toggleFavorito(report.id, e)}><Icons.Star filled={favoritos.includes(report.id)} /></button>
-            {expandedZoneId === report.id && <div className="report-details"><p>{report.description}</p><p className="caption">Posição {report.latitude}, {report.longitude} · Autor {report.author_id}</p></div>}
+            {expandedZoneId === report.id && <div className="report-details"><p>{report.description}</p><p className="caption">Posição {report.latitude}, {report.longitude}</p></div>}
           </article>)}
       </section>
     </div>
