@@ -8,9 +8,11 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import '../../../App.css';
 import { env } from '../../config/env';
-import { createReport, listReports, subscribeToReports, updateReportStatus } from '../../features/reports/services/reportService';
+import { createReport, listReports, newSubmissionId, subscribeToReports, updateReportStatus } from '../../features/reports/services/reportService';
+import { DEFAULT_HAZARD, REPORT_STATUS } from '../../features/reports/constants';
 import ReportFormScreen from '../../features/reports/screens/ReportFormScreen';
 import ModerationScreen from '../../features/reports/screens/ModerationScreen';
+import MyReportsPanel from '../../features/reports/components/MyReportsPanel.web';
 import { createVehicle, listFavoriteReportIds, listVehicles, setFavoriteReport } from '../../features/profile/services/userDataService';
 import { getCurrentPrecipitation, WEATHER_REFRESH_MS } from '../../features/dashboard/services/weatherService';
 import { GeocodingError, hasAddressQuery, resolveAddress, reverseGeocode } from '../../features/map/services/geocodingService';
@@ -62,7 +64,10 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const [reportCoords, setReportCoords] = useState(null);
   const [loadingReportGPS, setLoadingReportGPS] = useState(false);
   const [reportLocationNotice, setReportLocationNotice] = useState('');
-  const [formReporte, setFormReporte] = useState({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
+  const [formReporte, setFormReporte] = useState({ tipo: DEFAULT_HAZARD, descricao: '', local: '' });
+  // Observation time and idempotency key of the current report; a new key whenever the content changes.
+  const [reportMeta, setReportMeta] = useState(null);
+  const [lastSubmission, setLastSubmission] = useState(null);
   
   // Meteorologia Real e Monitoramento Global
   const [weatherReading, setWeatherReading] = useState(null);
@@ -265,14 +270,16 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   useEffect(() => {
     let active = true;
+    let latest = 0; // Only the newest load may update the list; an older, slower response is dropped.
     const loadReports = async () => {
+      const request = ++latest;
       try {
         const data = await listReports();
-        if (active) setReportes(data);
+        if (active && request === latest) setReportes(data);
       } catch (error) {
-        if (active) setReportError(error.message);
+        if (active && request === latest) setReportError(error.message);
       } finally {
-        if (active) setReportLoading(false);
+        if (active && request === latest) setReportLoading(false);
       }
     };
 
@@ -454,23 +461,32 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   const handleSaveReporte = async (e) => {
     e.preventDefault();
     setReportError('');
-    if (!reportCoords) {
+    if (user.guest) {
+      setReportError('Entre com uma conta de e-mail confirmado para enviar relatos.');
+      return;
+    }
+    if (!reportCoords || !reportMeta) {
       setReportError('Obtenha sua localização por GPS antes de enviar o relato.');
       return;
     }
     try {
-      await createReport({
+      const result = await createReport({
         latitude: reportCoords[0],
         longitude: reportCoords[1],
-        hazard_type: formReporte.tipo,
+        hazardCode: formReporte.tipo,
         description: formReporte.descricao.trim(),
         location_label: formReporte.local.trim(),
+        locationSource: 'gps',
+        submissionId: reportMeta.submissionId,
+        observedAt: reportMeta.observedAt,
       });
+      setLastSubmission(result);
       setReportCoords(null);
-      setFormReporte({ tipo: 'Alagamento Intransitável', descricao: '', local: '' });
+      setReportMeta(null);
+      setFormReporte({ tipo: DEFAULT_HAZARD, descricao: '', local: '' });
       setActiveTab('sucesso_reporte');
     } catch (error) {
-      setReportError(error instanceof Error ? error.message : 'Não foi possível registrar a ocorrência localmente.');
+      setReportError(error instanceof Error ? error.message : 'Não foi possível enviar o relato.');
     }
   };
 
@@ -493,6 +509,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
     setLoadingReportGPS(true);
     setReportLocationNotice('');
     setReportCoords(null);
+    setReportMeta(null);
     setReportError('');
     getExactPosition(getCurrentLocation)
       .then(async (coords) => {
@@ -509,6 +526,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
           local: address || `Coordenadas ${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
         }));
         setReportCoords(coords);
+        setReportMeta({ submissionId: newSubmissionId(), observedAt: new Date().toISOString() });
         setReportError('');
       })
       .catch(() => { if (!signal.aborted) setReportError('Não foi possível obter a posição. Confira a permissão de localização.'); })
@@ -525,13 +543,13 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
 
   const termoPesquisado = filtroTextoZona.trim().toLocaleLowerCase();
   const reportesExibidos = reportes
-    .filter((report) => report.status === 'Aprovado' || report.status === 'Pendente')
+    .filter((report) => report.status === REPORT_STATUS.published || report.status === REPORT_STATUS.legacyLocal)
     .filter((report) => !filtroApenasFavoritos || favoritos.includes(report.id))
     .filter((report) => !termoPesquisado || `${report.location_label} ${report.hazard_type} ${report.description}`.toLocaleLowerCase().includes(termoPesquisado));
 
   return (
     <AppShell user={user} activeTab={activeTab} onTabChange={handleTabChange} theme={theme} onToggleTheme={onToggleTheme} onLogout={onLogout}>
-        <p className="local-notice">Modo local · Relatos e veículos ficam neste dispositivo.</p>
+        <p className="local-notice">Relatos de usuários não são verificados · Veículos e favoritos ficam neste dispositivo.</p>
         {reportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
           <DashboardScreen weatherError={weatherError} buscaCentralQuery={buscaCentralQuery} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} centralAddressSelected={selectedCentralAddressRef.current?.name === buscaCentralQuery} onSelectAddress={selectCentralAddress} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
@@ -552,16 +570,19 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
           <ReportFormScreen
             form={formReporte}
             onChange={(nextForm, field) => {
-              if (field === 'local') setReportCoords(null);
+              if (field === 'local') { setReportCoords(null); setReportMeta(null); }
+              else setReportMeta(meta => meta && { ...meta, submissionId: newSubmissionId() });
               setFormReporte(nextForm);
             }}
+            canSubmit={!user.guest}
+            onSignIn={onLogout}
             coords={reportCoords}
             loadingGPS={loadingReportGPS}
             locationNotice={reportLocationNotice}
             onGPS={handleReportGPS}
             onSubmit={handleSaveReporte}
             icons={Icons}
-          />
+          ><MyReportsPanel user={user} /></ReportFormScreen>
         )}
 
         {/* SUCESSO */}
@@ -571,8 +592,13 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
               <div className="confirmation-icon" aria-hidden="true">
                 <Icons.Check />
               </div>
-              <h1 id="report-saved-title">Relato salvo neste dispositivo</h1>
-              <p>Seu registro está com status pendente. Ele não foi publicado nem enviado a serviços de emergência.</p>
+              {lastSubmission?.status === 'held' ? <>
+                <h1 id="report-saved-title">Relato recebido para revisão</h1>
+                <p>O relato foi armazenado, mas ficou retido para revisão e não está público. Ele não foi enviado a serviços de emergência.</p>
+              </> : <>
+                <h1 id="report-saved-title">Relato publicado como não verificado</h1>
+                <p>Outros usuários podem vê-lo no mapa por até 48 horas, marcado como relato não verificado. Ele não foi enviado a serviços de emergência.</p>
+              </>}
               <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Voltar ao painel</button>
             </section>
           </div>

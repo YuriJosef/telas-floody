@@ -45,15 +45,15 @@ export default function DashboardScreen({ weatherError, buscaCentralQuery, cidad
         </section>
       </div>
       <section className="reports-panel" aria-labelledby="reports-title">
-        <header className="section-heading"><div><p className="source-label">Neste dispositivo</p><h2 id="reports-title">Relatos locais</h2><p className="caption">Histórico neste navegador. O mapa exibe apenas registros aprovados.</p></div>
+        <header className="section-heading"><div><p className="source-label">Relatos de usuários · não verificados</p><h2 id="reports-title">Relatos recentes</h2><p className="caption">Relatos publicados nas últimas 48 horas e registros antigos salvos só neste navegador. O mapa exibe apenas relatos publicados.</p></div>
           <button className="btn-action-secondary" aria-pressed={filtroApenasFavoritos} onClick={() => setFiltroApenasFavoritos(!filtroApenasFavoritos)}><Icons.Star filled={filtroApenasFavoritos} /> Favoritos</button>
         </header>
         <label className="input-group">Filtrar registros<input aria-label="Filtrar ocorrências" placeholder="Local ou tipo de ocorrência" value={filtroTextoZona} onChange={e => setFiltroTextoZona(e.target.value)} /></label>
         {reportLoading ? <p role="status">Carregando relatos…</p> : reportesExibidos.length === 0
-          ? <div className="empty-state"><Icons.Map /><div><h3>Nenhum registro para exibir</h3><p>Os novos relatos ficam salvos neste dispositivo, com status pendente. A ausência de registros não confirma ausência de risco.</p></div></div>
+          ? <div className="empty-state"><Icons.Map /><div><h3>Nenhum registro para exibir</h3><p>Nenhum relato publicado no momento. A ausência de relatos não confirma ausência de risco.</p></div></div>
           : reportesExibidos.map(report => <article className="report-row" key={report.id}>
             <button className="report-disclosure" aria-expanded={expandedZoneId === report.id} onClick={() => setExpandedZoneId(expandedZoneId === report.id ? null : report.id)}>
-              <strong>{report.location_label}</strong><span>{report.hazard_type} · {report.status} · {formatDateTime(report.occurred_at)}</span>
+              <strong>{report.location_label}</strong><span>{report.hazard_type} · {report.status_label} · {formatDateTime(report.occurred_at)}</span>
             </button>
             <button className="icon-button" aria-label="Favoritar relato" aria-pressed={favoritos.includes(report.id)} onClick={e => toggleFavorito(report.id, e)}><Icons.Star filled={favoritos.includes(report.id)} /></button>
             {expandedZoneId === report.id && <div className="report-details"><p>{report.description}</p><p className="caption">Posição {report.latitude}, {report.longitude}</p></div>}

@@ -2,7 +2,8 @@ import GeoapifyAttribution from './components/GeoapifyAttribution.native';
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, useWindowDimensions } from 'react-native';
 import OpenStreetMap from './components/OpenStreetMap.native';
-import { Button, Card, Field, Page, ProviderLink, useNativeTheme } from '../../components/native/ui';
+import AddressAutocomplete from './components/AddressAutocomplete.native';
+import { Button, Card, Page, ProviderLink, useNativeTheme } from '../../components/native/ui';
 import { useLocation } from '../../hooks/useLocation';
 import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { env } from '../../config/env';
@@ -12,9 +13,10 @@ import { getDrivingRoute } from './services/routingService';
 import { usePrecipitationDetails } from '../dashboard/hooks/usePrecipitationDetails';
 import { getCurrentPrecipitation } from '../dashboard/services/weatherService';
 import { classifyHazard } from '../dashboard/indicators';
-import { listReports } from '../reports/services/reportService';
+import { listPublishedReports, subscribeToReports } from '../reports/services/reportService';
+import { UNVERIFIED_LABEL } from '../reports/constants';
 
-const layers = [['flood', 'Relatos locais'], ['streets', 'Ruas'], ['satellite', 'Satélite']];
+const layers = [['flood', 'Relatos'], ['streets', 'Ruas'], ['satellite', 'Satélite']];
 
 export default function MapScreen({ center }) {
   const { colors, styles } = useNativeTheme();
@@ -26,6 +28,9 @@ export default function MapScreen({ center }) {
   const [gpsOrigin, setGpsOrigin] = useState(null);
   const [originText, setOriginText] = useState('');
   const [destination, setDestination] = useState('');
+  // Coordinates of an address picked from the suggestions; cleared whenever the text changes.
+  const [originCoords, setOriginCoords] = useState(null);
+  const [destinationCoords, setDestinationCoords] = useState(null);
   const [route, setRoute] = useState(null);
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
@@ -34,9 +39,15 @@ export default function MapScreen({ center }) {
   const { start: startRequest, cancel: cancelRequest } = useLatestRequest();
   useEffect(() => {
     mounted.current = true;
-    listReports().then(data => { if (mounted.current) setReports(data); })
-      .catch(() => { if (mounted.current) setReportError('Não foi possível ler os relatos locais.'); });
-    return () => { mounted.current = false; };
+    let latest = 0; // Only the newest load may update the markers.
+    const load = () => {
+      const request = ++latest;
+      return listPublishedReports().then(data => { if (mounted.current && request === latest) { setReports(data); setReportError(''); } })
+        .catch(error => { if (mounted.current && request === latest) setReportError(error.message); });
+    };
+    load();
+    const unsubscribe = subscribeToReports(load);
+    return () => { mounted.current = false; unsubscribe(); };
   }, []);
 
   async function locate() {
@@ -50,6 +61,7 @@ export default function MapScreen({ center }) {
       const coords = await getCurrentLocation();
       if (signal.aborted) return;
       setGpsOrigin(coords);
+      setOriginCoords(null);
       setOriginText('Minha localização atual');
     } catch {
       if (!signal.aborted) {
@@ -87,14 +99,14 @@ export default function MapScreen({ center }) {
     let acquiringGPS = false;
     try {
       acquiringGPS = !gpsOrigin && !originText.trim();
-      const start = gpsOrigin || (acquiringGPS ? await getCurrentLocation() : await resolveAddress(originText, signal));
+      const start = gpsOrigin || originCoords || (acquiringGPS ? await getCurrentLocation() : await resolveAddress(originText, signal));
       if (signal.aborted) return;
       acquiringGPS = false;
       if (!start) {
         setError('Origem não encontrada. Informe rua e cidade.');
         return;
       }
-      const end = await resolveAddress(destination, signal);
+      const end = destinationCoords || await resolveAddress(destination, signal);
       if (signal.aborted) return;
       if (!end) {
         setError('Destino não encontrado. Informe rua e cidade.');
@@ -120,9 +132,9 @@ export default function MapScreen({ center }) {
 
   const rainDetails = usePrecipitationDetails(route?.rain);
   const markers = reports
-    .filter(report => report.status === 'Aprovado' && Number.isFinite(report.latitude) && Number.isFinite(report.longitude)
+    .filter(report => Number.isFinite(report.latitude) && Number.isFinite(report.longitude)
       && Math.abs(report.latitude) <= 90 && Math.abs(report.longitude) <= 180)
-    .map(report => ({ coords: [report.latitude, report.longitude], label: report.location_label, kind: report.hazard_type, flood: classifyHazard(report) === 'flood' }))
+    .map(report => ({ coords: [report.latitude, report.longitude], label: report.location_label, kind: `${report.hazard_type} · ${UNVERIFIED_LABEL}`, flood: classifyHazard(report) === 'flood' }))
     .filter(marker => layer !== 'flood' || marker.flood);
 
   return <Page title="Mapa e rotas">
@@ -134,17 +146,22 @@ export default function MapScreen({ center }) {
         <OpenStreetMap key={layer === 'satellite' ? 'satellite' : 'street'} center={center} origin={route?.start || gpsOrigin} destination={route?.end} route={route?.coordinates} markers={markers} satellite={layer === 'satellite'} onTileError={layer === 'satellite' ? fallbackFromSatellite : undefined} />
       </View>
       {satelliteFallback && <Text style={styles.muted} accessibilityLiveRegion="polite">Satélite indisponível. Exibindo mapa de ruas.</Text>}
-      <Text style={styles.muted}>Registros locais aprovados. Áreas sem marcações também podem apresentar risco.</Text>
+      <Text style={styles.muted}>Relatos de usuários, não verificados, publicados nas últimas 48 h. Áreas sem marcações também podem apresentar risco.</Text>
       {reportError ? <Text accessibilityRole="alert" style={styles.text}>{reportError}</Text> : null}
     </View>
     <Card>
       <Text accessibilityRole="header" style={styles.heading}>Planejar rota</Text>
       <Text style={styles.muted}>Traçado viário do <ProviderLink url="https://project-osrm.org/">OSRM</ProviderLink> · <ProviderLink url={MAP_CREDITS_URL}>© OpenStreetMap</ProviderLink> · <ProviderLink url={MAP_CORRECTION_URL}>Corrigir mapa</ProviderLink>. Não considera alagamentos nem garante passagem segura. Sem orientação curva a curva.</Text>
-      <Field label="Origem" value={originText} placeholder="Rua e cidade ou localização do GPS" editable={!busy} onChangeText={text => { setOriginText(text); setGpsOrigin(null); clearRoute(); }} />
+      <AddressAutocomplete label="Origem" value={originText} placeholder="Rua e cidade ou localização do GPS" editable={!busy} selected={Boolean(gpsOrigin || originCoords)}
+        onChangeText={text => { setOriginText(text); setGpsOrigin(null); setOriginCoords(null); clearRoute(); }}
+        onSelect={match => { setOriginText(match.display_name); setGpsOrigin(null); setOriginCoords([match.lat, match.lon]); clearRoute(); }} />
       <Text style={styles.muted}>Se a origem estiver vazia, o cálculo solicitará o GPS. Origem e destino são enviados ao serviço de rotas.</Text>
       <Button title={busy === 'gps' ? 'Obtendo localização…' : 'Usar minha localização'} icon="my_location" variant="tonal" disabled={Boolean(busy)} onPress={locate} />
       {gpsOrigin && <Text style={styles.muted}>Posição obtida para a origem. Sem acompanhamento em tempo real.</Text>}
-      <Field label="Destino (rua e cidade)" value={destination} editable={!busy} onChangeText={text => { setDestination(text); clearRoute(); }} returnKeyType="search" onSubmitEditing={calculate} />
+      <AddressAutocomplete label="Destino (rua e cidade)" value={destination} editable={!busy} selected={Boolean(destinationCoords)}
+        onChangeText={text => { setDestination(text); setDestinationCoords(null); clearRoute(); }}
+        onSelect={match => { setDestination(match.display_name); setDestinationCoords([match.lat, match.lon]); clearRoute(); }}
+        returnKeyType="search" onSubmitEditing={calculate} />
       <Button title={busy === 'route' ? 'Calculando…' : 'Calcular rota'} icon="route" disabled={Boolean(busy) || !destination.trim()} onPress={calculate} />
       <GeoapifyAttribution />
       {error ? <Text accessibilityRole="alert" style={styles.text}>{error}</Text> : null}
@@ -153,7 +170,7 @@ export default function MapScreen({ center }) {
         <Text style={styles.text}>{route.distance} km · {route.minutes} min</Text>
         <Text style={styles.muted}>Precipitação modelada no destino (<ProviderLink url="https://open-meteo.com/">Open-Meteo</ProviderLink>, <ProviderLink url="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</ProviderLink>) · {route.rain ? route.rain.amountMm.toLocaleString('pt-BR') + ' mm' : route.rain === undefined ? 'Consultando…' : 'Indisponível'}</Text>
         {rainDetails && <Text style={styles.muted}>Acumulado em {rainDetails.period} · {rainDetails.time} (Recife){rainDetails.stale ? ' · estimativa desatualizada' : ''}</Text>}
-        <Button title="Limpar rota" variant="subtle" onPress={() => { clearRoute(); setDestination(''); }} />
+        <Button title="Limpar rota" variant="subtle" onPress={() => { clearRoute(); setDestination(''); setDestinationCoords(null); }} />
       </View>}
     </Card>
   </Page>;

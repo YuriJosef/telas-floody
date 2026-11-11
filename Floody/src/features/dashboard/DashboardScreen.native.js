@@ -3,7 +3,8 @@ import MaterialIcon from '../../components/native/MaterialIcon.native';
 import OfficialAlertsPanel from '../alerts/components/OfficialAlertsPanel.native';
 import React, { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
-import { Page, Card, Button, Field, ProviderLink, useNativeTheme } from '../../components/native/ui';
+import { Page, Card, Button, ProviderLink, useNativeTheme } from '../../components/native/ui';
+import AddressAutocomplete from '../map/components/AddressAutocomplete.native';
 import { useForeground } from '../../hooks/useForeground';
 import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { usePrecipitationDetails } from './hooks/usePrecipitationDetails';
@@ -16,13 +17,20 @@ export default function DashboardScreen({ onMap }) {
   const [area, setArea] = useState({ name: 'Recife, PE', coords: [-8.05428, -34.8813] });
   const [weather, setWeather] = useState({ loading: true });
   const [query, setQuery] = useState('');
+  // Address chosen from the suggestions; kept while the field still shows its name.
+  const [picked, setPicked] = useState(null);
   const foreground = useForeground();
   const { start: startLookup, cancel: cancelLookup } = useLatestRequest();
   const [reports, setReports] = useState([]);
   const [error, setError] = useState('');
   useEffect(() => {
     let active = true;
-    const load = () => listReports().then(data => { if (active) setReports(data); }).catch(() => { if (active) setError('Não foi possível ler os relatos locais.'); });
+    let latest = 0; // Only the newest load may update the list.
+    const load = () => {
+      const request = ++latest;
+      return listReports().then(data => { if (active && request === latest) { setReports(data); setError(''); } })
+        .catch(error => { if (active && request === latest) setError(error.message); });
+    };
     load(); const unsubscribe = subscribeToReports(load);
     return () => { active = false; unsubscribe(); };
   }, []);
@@ -47,9 +55,16 @@ export default function DashboardScreen({ onMap }) {
     const timer = setInterval(refresh, WEATHER_REFRESH_MS);
     return () => { clearInterval(timer); controller.abort(); };
   }, [area, foreground]);
+  function selectAddress({ display_name: name, lat, lon }) {
+    cancelLookup();
+    setQuery(name);
+    setPicked({ name, coords: [lat, lon] });
+    setArea({ name, coords: [lat, lon] }); // The precipitation effect refetches for the new area.
+  }
   async function search() {
     const name = query.trim();
     if (!name) return;
+    if (picked?.name === name) { cancelLookup(); setArea({ name, coords: picked.coords }); return; }
     const signal = startLookup();
     setArea({ name, coords: null });
     setWeather({ loading: true });
@@ -87,7 +102,8 @@ export default function DashboardScreen({ onMap }) {
         </View>
       </View>
       <Text style={styles.muted}>Estimativa do <ProviderLink url="https://open-meteo.com/">Open-Meteo</ProviderLink> · <ProviderLink url="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</ProviderLink>. Não mede alagamentos nem indica passagem segura.</Text>
-      <Field label="Consultar outro local" placeholder="Rua, bairro e cidade" value={query} onChangeText={setQuery} returnKeyType="search" onSubmitEditing={search} />
+      <AddressAutocomplete label="Consultar outro local" placeholder="Rua, bairro e cidade" value={query} selected={picked?.name === query}
+        onChangeText={text => { setQuery(text); setPicked(null); }} onSelect={selectAddress} returnKeyType="search" onSubmitEditing={search} />
       <Button title="Consultar chuva" icon="search" onPress={search} disabled={!query.trim() || loading} />
       <GeoapifyAttribution />
       <Text style={styles.label}>Locais de Recife</Text>
@@ -103,12 +119,12 @@ export default function DashboardScreen({ onMap }) {
       )}</View>
       <Button title="Ver mapa e rota" icon="map" variant="tonal" disabled={!area.coords} onPress={() => onMap(area.coords)} />
     </Card>
-    <Text accessibilityRole="header" style={styles.heading}>Meus relatos locais</Text>
-    <Text style={styles.muted}>Registros neste dispositivo, sem publicação.</Text>
-    {error ? <Text accessibilityRole="alert" style={styles.text}>{error}</Text> : reports.length === 0 && <Text style={styles.muted}>Nenhum relato salvo.</Text>}
+    <Text accessibilityRole="header" style={styles.heading}>Relatos recentes</Text>
+    <Text style={styles.muted}>Relatos de usuários, não verificados, publicados nas últimas 48 horas, e registros antigos salvos só neste dispositivo.</Text>
+    {error ? <Text accessibilityRole="alert" style={styles.text}>{error}</Text> : reports.length === 0 && <Text style={styles.muted}>Nenhum relato publicado no momento. A ausência de relatos não confirma ausência de risco.</Text>}
     {reports.map(report => <Card key={report.id} style={{ borderRadius: 12, backgroundColor: colors.local }}>
       <Text style={[styles.text, { color: colors.onLocal }]}>{report.location_label}</Text>
-      <Text style={[styles.muted, { color: colors.onLocal }]}>{report.hazard_type} · {report.status}</Text>
+      <Text style={[styles.muted, { color: colors.onLocal }]}>{report.hazard_type} · {report.status_label}</Text>
     </Card>)}
   </Page>;
 }
