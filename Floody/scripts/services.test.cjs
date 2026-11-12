@@ -11,35 +11,213 @@ function load(name) {
  if(cache.has(file)) return cache.get(file).exports;
  const module = { exports: {} }; cache.set(file,module);
  const code=babel.transformSync(fs.readFileSync(file,'utf8'), { configFile: false, babelrc:false, plugins:['@babel/plugin-transform-modules-commonjs'] }).code;
- new Function('require','module','exports',code)(id=>id.startsWith('.')?load(path.resolve(path.dirname(file),id)):require(id),module,module.exports);
+ new Function('require','module','exports',code)(id=>id.startsWith('.')?load(path.resolve(path.dirname(file),id)):cache.has(id)?cache.get(id).exports:require(id),module,module.exports);
  return module.exports;
 }
 const data = new Map();
 globalThis.localStorage = { getItem:key=>data.get(key)??null, setItem:(key,value)=>data.set(key,value), removeItem:key=>data.delete(key) };
+// Report service runs against a fake Supabase client: these tests prove client behaviour only, not the server.
+const rpcCalls=[];let rpcHandler=async()=>({data:null,error:null});
+const fakeSupabase={rpc:async(name,args)=>{rpcCalls.push([name,args]);return rpcHandler(name,args);}};
+cache.set(path.resolve('src/services/supabase/client.web.js'),{exports:{supabase:fakeSupabase}});
+cache.set('expo-crypto',{exports:{randomUUID:()=>require('node:crypto').randomUUID()}});
 const reports=load('src/features/reports/services/reportService.js');
 const users=load('src/features/profile/services/userDataService.js');
 const { buildUrl, requestJson }=load('src/services/api/externalClient.js');
-const report={ latitude:-8,longitude:-34,hazard_type:'Alagamento',description:'Rua alagada',location_label:'Recife' };
-beforeEach(()=>data.clear());
-test('concurrent reports survive storage updates and remain pending',async()=>{
- await Promise.all(Array.from({length:10},()=>reports.createReport(report)));
- const items=await reports.listReports();assert.equal(items.length,10);assert.equal(new Set(items.map(i=>i.id)).size,10);assert.ok(items.every(i=>i.status==='Pendente'));
+const report={ latitude:-8.0631,longitude:-34.8711,hazardCode:'flood_impassable',description:' Rua alagada ',location_label:'Recife',submissionId:'5b0c1f0e-8a8d-4c7e-9a43-2f7d2d1f1a10',observedAt:'2026-11-10T21:00:00.000Z',locationSource:'gps' };
+beforeEach(()=>{data.clear();rpcCalls.length=0;rpcHandler=async()=>({data:null,error:null});});
+test('reports are sent only through submit_report with the submission id and no client-owned fields',async()=>{
+ rpcHandler=async()=>({data:{ok:true,code:'OK',replayed:false,report:{id:'r1',status:'published'}},error:null});
+ const result=await reports.createReport({...report,author_id:'attacker',status:'published'});
+ assert.deepEqual(result,{id:'r1',status:'published',replayed:false});
+ const [[name,args]]=rpcCalls;assert.equal(name,'submit_report');
+ assert.equal(args.p_client_submission_id,report.submissionId);assert.equal(args.p_description,'Rua alagada');assert.equal(args.p_location_source,'gps');
+ assert.ok(Object.keys(args).every(key=>key.startsWith('p_'))&&!('p_author_id' in args)&&!('p_status' in args));
+ assert.equal(data.get('floody_reports'),undefined,'nothing is written to the legacy local list');
 });
-test('invalid reports cannot be persisted',async()=>{
- await assert.rejects(reports.createReport({...report,latitude:91}),/Localização/);
- await assert.rejects(reports.createReport({...report,description:' '}),/Preencha/);
- assert.deepEqual(await reports.listReports(),[]);
+test('server rejections, network failures and expired sessions are never reported as success',async()=>{
+ rpcHandler=async()=>({data:{ok:false,code:'OUTSIDE_SERVICE_AREA'},error:null});
+ await assert.rejects(reports.createReport(report),err=>err.code==='OUTSIDE_SERVICE_AREA'&&/Região Metropolitana/.test(err.message));
+ rpcHandler=async()=>({data:{ok:false,code:'EMAIL_NOT_VERIFIED'},error:null});
+ await assert.rejects(reports.createReport(report),/Confirme seu e-mail/);
+ rpcHandler=async()=>{throw new TypeError('Failed to fetch');};
+ await assert.rejects(reports.createReport(report),err=>err.code==='UNKNOWN'&&err.retryable&&/não será duplicado/.test(err.message));
+ rpcHandler=async()=>({data:null,error:{code:'PGRST301',message:'JWT expired'}});
+ await assert.rejects(reports.createReport(report),err=>err.code==='AUTH_REQUIRED');
+ await assert.rejects(reports.createReport({...report,latitude:91}),/localização/);
+ await assert.rejects(reports.createReport({...report,submissionId:''}),/localização/);
+});
+test('published reports come from the server and legacy local reports stay read-only and unpublished',async()=>{
+ rpcHandler=async name=>({data:name==='list_published_reports'?[
+  {id:'p1',hazard_type:'flood_impassable',description:'Alagado',location_label:null,latitude:-8.0631,longitude:-34.8711,location_source:'gps',verification:'unverified_user_report',observed_at:'2026-11-10T20:00:00Z',expires_at:'2026-11-12T20:00:00Z'},
+  {id:'bad',hazard_type:'traffic',description:'x',latitude:'NaN',longitude:0}]:null,error:null});
+ data.set('floody_reports',JSON.stringify([{id:'old',latitude:-8,longitude:-34,description:'Antigo',location_label:'Recife',hazard_type:'Obra',status:'Pendente',occurred_at:'2026-11-01T00:00:00Z'}]));
+ const items=await reports.listReports();
+ assert.deepEqual(items.map(i=>[i.id,i.status]),[['p1','published'],['old','legacy_local']]);
+ assert.equal(items[0].hazard_type,'Alagamento Intransitável');assert.equal(items[0].status_label,'Relato não verificado');
+ assert.equal(items[1].status_label,'Salvo só neste dispositivo · não publicado');
+ rpcHandler=async()=>({data:null,error:{message:'offline'}});
+ await assert.rejects(reports.listReports(),/relatos publicados/);
+ data.set('floody_reports','[null]');rpcHandler=async()=>({data:[],error:null});
+ assert.deepEqual(await reports.listReports(),[]);assert.equal(data.get('floody_reports'),'[null]','corrupt legacy data is not overwritten');
+});
+test('withdrawal goes through withdraw_report, removes the report at once and notifies listeners',async()=>{
+ const row=id=>({id,hazard_type:'traffic',description:'Trânsito',location_label:'Recife',latitude:-8.06,longitude:-34.87,location_source:'gps',observed_at:'2026-11-10T20:00:00Z',expires_at:'2026-11-12T20:00:00Z'});
+ rpcHandler=async name=>name==='list_published_reports'?{data:[row('w1'),row('w2')],error:null}:{data:{ok:true,code:'OK',report:{id:'w1',status:'withdrawn'}},error:null};
+ let notified=0;const unsubscribe=reports.subscribeToReports(()=>{notified++;});
+ assert.deepEqual((await reports.listPublishedReports()).map(r=>r.id),['w1','w2']);
+ assert.deepEqual(await reports.withdrawReport('w1'),{id:'w1',status:'withdrawn'});
+ assert.deepEqual(rpcCalls.at(-1),['withdraw_report',{p_report_id:'w1'}]);
+ assert.equal(notified,1,'listeners (public list, map, my reports) are told to reload');
+ assert.deepEqual((await reports.listPublishedReports()).map(r=>r.id),['w2'],'withdrawn report is hidden even if the server list is stale');
+ unsubscribe();
+});
+test('withdrawal errors are explicit, duplicates are refused and a lost-response retry counts as success',async()=>{
+ rpcHandler=async()=>({data:{ok:false,code:'NOT_FOUND'},error:null});
+ await assert.rejects(reports.withdrawReport('other-user-report'),err=>err.code==='NOT_FOUND');
+ rpcHandler=async()=>({data:{ok:false,code:'CONFLICT_STATE',details:{status:'expired'}},error:null});
+ await assert.rejects(reports.withdrawReport('old'),err=>err.code==='CONFLICT_STATE');
+ rpcHandler=async()=>({data:{ok:false,code:'CONFLICT_STATE',details:{status:'withdrawn'}},error:null});
+ assert.equal((await reports.withdrawReport('again')).status,'withdrawn');
+ rpcHandler=async()=>{throw new TypeError('Failed to fetch');};
+ await assert.rejects(reports.withdrawReport('net'),err=>err.code==='UNKNOWN'&&err.retryable);
+ rpcHandler=async()=>({data:null,error:{code:'PGRST301',message:'JWT expired'}});
+ await assert.rejects(reports.withdrawReport('jwt'),err=>err.code==='AUTH_REQUIRED');
+ let release;rpcHandler=()=>new Promise(resolve=>{release=()=>resolve({data:{ok:true,code:'OK'},error:null});});
+ const first=reports.withdrawReport('slow');
+ await assert.rejects(reports.withdrawReport('slow'),err=>err.code==='IN_PROGRESS');
+ release();await first;
+ assert.equal(rpcCalls.filter(([name,args])=>name==='withdraw_report'&&args.p_report_id==='slow').length,1,'only one request was sent');
+});
+test('my reports come from my_reports and only open reports are withdrawable',async()=>{
+ rpcHandler=async()=>({data:[{id:'a',hazard_type:'pothole',description:'x',location_label:null,status:'published',observed_at:'2026-11-10T20:00:00Z'},
+  {id:'b',hazard_type:'traffic',description:'y',location_label:'Recife',status:'withdrawn'},{id:'c',hazard_type:'traffic',description:'z',location_label:'Recife',status:'held'}],error:null});
+ const mine=await reports.listMyReports();
+ assert.deepEqual(rpcCalls.at(-1),['my_reports',undefined]);
+ assert.deepEqual(mine.map(r=>[r.id,r.withdrawable]),[['a',true],['b',false],['c',true]]);
+ assert.equal(mine[0].hazard_type,'Buraco na via');
+ rpcHandler=async()=>({data:null,error:{message:'offline'}});
+ await assert.rejects(reports.listMyReports(),/seus relatos/);
+});
+test('overlapping reads share one request, but a change forces a fresh one',async()=>{
+ let release;const gate=new Promise(r=>{release=r;});
+ rpcHandler=async name=>{await gate;return {data:name==='list_published_reports'?[]:[],error:null};};
+ const a=reports.listPublishedReports(),b=reports.listPublishedReports();
+ release();await Promise.all([a,b]);
+ assert.equal(rpcCalls.filter(([n])=>n==='list_published_reports').length,1,'concurrent readers share the in-flight request');
+ rpcCalls.length=0;
+ const holds=[];rpcHandler=name=>name==='submit_report'?Promise.resolve({data:{ok:true,code:'OK',report:{id:'n1',status:'published'}},error:null}):new Promise(r=>{holds.push(()=>r({data:[],error:null}));});
+ const stale=reports.listPublishedReports();
+ await reports.createReport(report);
+ const fresh=reports.listPublishedReports();
+ assert.equal(rpcCalls.filter(([n])=>n==='list_published_reports').length,2,'a read started before the change is not reused after it');
+ holds.forEach(release=>release());await Promise.all([stale,fresh]);
+ assert.ok(data.get('floody_reports_changed'),'the change is announced to other tabs through storage');
+ rpcCalls.length=0;rpcHandler=async()=>({data:[],error:null});
+ await Promise.all([reports.listMyReports('user-a'),reports.listMyReports('user-b')]);
+ assert.equal(rpcCalls.filter(([n])=>n==='my_reports').length,2,'my_reports reads are never shared across accounts');
+});
+test('views are refreshed by a 30 s poll that stops when the last view unsubscribes',()=>{
+ const { mock }=require('node:test');
+ mock.timers.enable({apis:['setInterval']});
+ try{
+  let calls=0;const unsubscribe=reports.subscribeToReports(()=>{calls++;});
+  mock.timers.tick(29999);assert.equal(calls,0);
+  mock.timers.tick(1);assert.equal(calls,1,'refreshed after 30 s');
+  unsubscribe();mock.timers.tick(60000);assert.equal(calls,1,'no polling without subscribers');
+ } finally { mock.timers.reset(); }
+});
+test('auth errors are specific: network, known codes and unknown codes are never a silent generic',()=>{
+ const { authMessage }=load('src/store/authMessages.js');
+ assert.match(authMessage({name:'AuthRetryableFetchError',message:'Network request failed',status:0}),/conectar ao serviço de contas/);
+ assert.match(authMessage(new TypeError('Network request failed')),/conectar ao serviço de contas/);
+ assert.match(authMessage({code:'invalid_credentials',message:'Invalid login credentials',status:400}),/E-mail ou senha incorretos/);
+ assert.match(authMessage({code:'email_not_confirmed',message:'Email not confirmed',status:400}),/Confirme seu e-mail/);
+ assert.match(authMessage({code:'over_request_rate_limit',status:429}),/Muitas tentativas/);
+ assert.equal(authMessage({code:'unexpected_failure',message:'boom',status:500}),'Não foi possível concluir (unexpected_failure). Tente novamente.');
+ assert.equal(authMessage({message:'x',status:503}),'Não foi possível concluir (HTTP 503). Tente novamente.');
+ assert.ok(!authMessage({code:'eyJhbGciOiJIUzI1NiJ9.secret.token',status:400}).includes('eyJ'),'a token-like code is never echoed');
+});
+test('a loopback Supabase URL is detected so a phone build can warn in development',()=>{
+ const { isLoopbackUrl }=load('src/services/supabase/createSupabase.js');
+ assert.equal(isLoopbackUrl('http://127.0.0.1:54321'),true);assert.equal(isLoopbackUrl('http://localhost:54321'),true);
+ assert.equal(isLoopbackUrl('https://gssztjlcefjayzgvqsck.supabase.co'),false);assert.equal(isLoopbackUrl(''),false);
+});
+test('legacy device reports stay readable when the published list is unavailable, without hiding the failure',async()=>{
+ const legacy=[{id:'old',latitude:-8,longitude:-34,description:'Antigo',location_label:'Recife',hazard_type:'Obra',status:'Pendente',occurred_at:'2026-11-01T00:00:00Z'}];
+ data.set('floody_reports',JSON.stringify(legacy));
+ const clientModule=cache.get(path.resolve('src/services/supabase/client.web.js'));
+ clientModule.exports.supabase=null;
+ try {
+  await assert.rejects(reports.listReports(),err=>err.code==='NOT_CONFIGURED'&&/não configurado/.test(err.message)
+   &&Array.isArray(err.partial)&&err.partial.map(r=>[r.id,r.status]).join()==='old,legacy_local');
+ } finally { clientModule.exports.supabase=fakeSupabase; }
+ rpcHandler=async()=>({data:null,error:{message:'offline'}});
+ await assert.rejects(reports.listReports(),err=>/relatos publicados/.test(err.message)&&err.partial.map(r=>r.id).join()==='old');
+ rpcHandler=async()=>{throw new TypeError('Failed to fetch');};
+ await assert.rejects(reports.listReports(),err=>err.partial.map(r=>r.id).join()==='old','an ambiguous network failure still exposes the device-only reports');
+ assert.ok(!rpcCalls.some(([name])=>name==='submit_report'),'legacy reports are never uploaded');
+ assert.equal(data.get('floody_reports'),JSON.stringify(legacy),'legacy storage is left untouched');
+});
+test('a list kept after a failed refresh drops reports whose 48 h lifetime ended, but keeps legacy ones',()=>{
+ const now=Date.parse('2026-11-12T12:00:00Z');
+ const list=[{id:'live',expires_at:'2026-11-12T12:00:01Z'},{id:'ended',expires_at:'2026-11-12T12:00:00Z'},{id:'legacy',status:'legacy_local'}];
+ assert.deepEqual(reports.withoutExpired(list,now).map(r=>r.id),['live','legacy']);
+ assert.deepEqual(reports.withoutExpired(undefined,now),[],'a missing partial list is empty, not an error');
+});
+test('GPS accuracy is sent as provenance only when the server would accept it',async()=>{
+ rpcHandler=async()=>({data:{ok:true,code:'OK',report:{id:'r1',status:'published'}},error:null});
+ await reports.createReport({...report,accuracy:12.5});
+ await reports.createReport({...report,accuracy:250000});
+ await reports.createReport({...report,accuracy:Number.NaN});
+ assert.deepEqual(rpcCalls.map(([,args])=>args.p_gps_accuracy_m),[12.5,null,null]);
+});
+test('a description without any letter or digit is refused before reaching the server',async()=>{
+ await assert.rejects(reports.createReport({...report,description:'​​ ...'}),err=>err.code==='VALIDATION_FAILED');
+ assert.equal(rpcCalls.length,0);
+ rpcHandler=async()=>({data:{ok:true,code:'OK',report:{id:'r1',status:'published'}},error:null});
+ await reports.createReport({...report,description:'Água na pista'});
+ assert.equal(rpcCalls.length,1,'accented Portuguese text is accepted');
+});
+test('held reports are never described as under an available review',()=>{
+ const { submissionOutcome, ownStatusLabel }=load('src/features/reports/constants.js');
+ const held=submissionOutcome('held');
+ assert.doesNotMatch(`${held.title} ${held.body}`,/para revisão|em revisão/i);
+ assert.match(held.body,/não foi publicado/);assert.match(held.body,/não está disponível/);assert.match(held.body,/24 horas/);
+ assert.doesNotMatch(ownStatusLabel('held'),/revisão/i);assert.doesNotMatch(ownStatusLabel('hidden'),/revisão/i);
+ const published=submissionOutcome('published');
+ assert.match(published.body,/48 horas/);assert.match(published.body,/não verificado/);
+});
+test('sign-out is judged by the session actually left on the device',async()=>{
+ const { signOutThisDevice, accountFromSession }=load('src/store/authSession.js');
+ const fakeAuth=({ signOut, session })=>({ signOut, getSession:async()=>({data:{session:typeof session==='function'?session():session},error:null}) });
+ const user={id:'u1',email:'pessoa@floody.test',email_confirmed_at:'2026-11-10T00:00:00Z'};
+ let stored={user};
+ const ok=await signOutThisDevice(fakeAuth({signOut:async()=>{stored=null;return{error:null};},session:()=>stored}));
+ assert.deepEqual(ok,{signedOut:true});
+ stored={user};
+ const offline=await signOutThisDevice(fakeAuth({signOut:async()=>{stored=null;return{error:{name:'AuthRetryableFetchError',message:'Network request failed'}};},session:()=>stored}));
+ assert.deepEqual(offline,{signedOut:true},'server revocation failed but this device no longer holds a session');
+ stored={user};
+ const storageFailure=await signOutThisDevice(fakeAuth({signOut:async()=>{throw new Error('storage unavailable');},session:()=>stored}));
+ assert.equal(storageFailure.signedOut,false);assert.match(storageFailure.error,/Não foi possível sair/);
+ const keptByLibrary=await signOutThisDevice(fakeAuth({signOut:async()=>({error:{message:'boom'}}),session:{user}}));
+ assert.equal(keptByLibrary.signedOut,false,'an error is never assumed to mean signed out');
+ const unknown=await signOutThisDevice({signOut:async()=>({error:null}),getSession:async()=>{throw new Error('storage unavailable');}});
+ assert.equal(unknown.signedOut,false,'an unreadable session is treated as still present');
+ assert.equal(accountFromSession(null),null);
+ const account=accountFromSession({user});
+ assert.deepEqual(account,{id:'u1',nome:'Minha conta',tipo:'condutor',guest:false,emailVerified:true});
+ assert.ok(!JSON.stringify(account).includes('@'),'the app user object never carries the e-mail');
 });
 test('local clients cannot approve reports',async()=>{
- await reports.createReport(report);const [saved]=await reports.listReports();
- await assert.rejects(reports.updateReportStatus(saved.id,'Aprovado'),/backend/);
- assert.equal((await reports.listReports())[0].status,'Pendente');
+ await assert.rejects(reports.updateReportStatus('p1','published'),/backend/);
 });
-test('vehicle validation and favorites are persistent and deduplicated',async()=>{
- assert.throws(()=>users.createVehicle({make:'A',model:'B',ground_clearance_cm:-1}),/altura/);
- await users.createVehicle({make:'A',model:'B',ground_clearance_cm:17});assert.equal((await users.listVehicles()).length,1);
- await Promise.all([users.setFavoriteReport('one',true),users.setFavoriteReport('one',true)]);assert.deepEqual(await users.listFavoriteReportIds(),['one']);
- await users.setFavoriteReport('one',false);assert.deepEqual(await users.listFavoriteReportIds(),[]);
+test('only a publishable Supabase key is accepted in the app',()=>{
+ const { isPublishableKey }=load('src/services/supabase/createSupabase.js');
+ const jwt=role=>['x',Buffer.from(JSON.stringify({role})).toString('base64url'),'y'].join('.');
+ assert.equal(isPublishableKey('sb_publishable_abc'),true);assert.equal(isPublishableKey(jwt('anon')),true);
+ assert.equal(isPublishableKey('sb_secret_abc'),false);assert.equal(isPublishableKey(jwt('service_role')),false);assert.equal(isPublishableKey(''),false);
 });
 test('external client requires HTTPS and preserves encoded queries',()=>{
  assert.throws(()=>buildUrl('http://example.com'),/HTTPS/);
@@ -310,21 +488,6 @@ test('OSRM validates input and decoded GeoJSON before returning a route on eithe
   coordinates = [[-34.88, -8.05], [-34.87, 91]];
   await assert.rejects(getDrivingRoute([-8.05, -34.88], [-8.06, -34.87]), /inválidas/);
  } finally { globalThis.fetch = originalFetch; }
-});
-
-test('local reports validate stored records without overwriting corrupt data or persisting extra fields', async () => {
- data.set('floody_reports', '[null]');
- await assert.rejects(reports.listReports(), /Dados de relatos locais inválidos/);
- await assert.rejects(reports.createReport(report), /Dados de relatos locais inválidos/);
- assert.equal(data.get('floody_reports'), '[null]');
- data.delete('floody_reports');
- const longLocation = 'Endereço do provedor, '.repeat(30) + 'Recife';
- await reports.createReport({ ...report, location_label: longLocation, unexpected: 'private fixture', status: 'Aprovado', description: ' Observação ' });
- const [saved] = await reports.listReports();
- assert.equal(saved.status, 'Pendente');
- assert.equal(saved.description, 'Observação');
- assert.equal(saved.location_label, longLocation);
- assert.equal('unexpected' in saved, false);
 });
 
 test('map tile URL validation and credits follow the effective provider', () => {
