@@ -11,7 +11,7 @@ import { usePrecipitationDetails } from './hooks/usePrecipitationDetails';
 import { resolveAddress } from '../map/services/geocodingService';
 import { LOCAL_AREA_PROFILES } from './indicators';
 import { getCurrentPrecipitation, WEATHER_REFRESH_MS } from './services/weatherService';
-import { listReports, subscribeToReports } from '../reports/services/reportService';
+import { listReports, subscribeToReports, withoutExpired } from '../reports/services/reportService';
 export default function DashboardScreen({ onMap }) {
   const { colors, styles } = useNativeTheme();
   const [area, setArea] = useState({ name: 'Recife, PE', coords: [-8.05428, -34.8813] });
@@ -32,8 +32,9 @@ export default function DashboardScreen({ onMap }) {
         .catch(error => {
           if (!active || request !== latest) return;
           setError(error.message);
-          // Nothing loaded yet: still show this device's legacy reports. A failed refresh keeps the last list.
-          if (error.partial) setReports(current => current.length ? current : error.partial);
+          // Nothing loaded yet: still show this device's legacy reports. A failed refresh keeps the last
+          // list, minus reports whose 48 h lifetime has ended in the meantime.
+          setReports(current => withoutExpired(current.length ? current : error.partial));
         });
     };
     load(); const unsubscribe = subscribeToReports(load);

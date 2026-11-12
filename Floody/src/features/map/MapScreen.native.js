@@ -13,7 +13,7 @@ import { getDrivingRoute } from './services/routingService';
 import { usePrecipitationDetails } from '../dashboard/hooks/usePrecipitationDetails';
 import { getCurrentPrecipitation } from '../dashboard/services/weatherService';
 import { classifyHazard } from '../dashboard/indicators';
-import { listPublishedReports, subscribeToReports } from '../reports/services/reportService';
+import { listPublishedReports, subscribeToReports, withoutExpired } from '../reports/services/reportService';
 import { UNVERIFIED_LABEL } from '../reports/constants';
 
 const layers = [['flood', 'Relatos'], ['streets', 'Ruas'], ['satellite', 'Satélite']];
@@ -43,7 +43,11 @@ export default function MapScreen({ center }) {
     const load = () => {
       const request = ++latest;
       return listPublishedReports().then(data => { if (mounted.current && request === latest) { setReports(data); setReportError(''); } })
-        .catch(error => { if (mounted.current && request === latest) setReportError(error.message); });
+        .catch(error => {
+          if (!mounted.current || request !== latest) return;
+          setReportError(error.message);
+          setReports(current => withoutExpired(current)); // Stale markers whose 48 h lifetime ended are removed.
+        });
     };
     load();
     const unsubscribe = subscribeToReports(load);

@@ -159,6 +159,26 @@ test('legacy device reports stay readable when the published list is unavailable
  assert.ok(!rpcCalls.some(([name])=>name==='submit_report'),'legacy reports are never uploaded');
  assert.equal(data.get('floody_reports'),JSON.stringify(legacy),'legacy storage is left untouched');
 });
+test('a list kept after a failed refresh drops reports whose 48 h lifetime ended, but keeps legacy ones',()=>{
+ const now=Date.parse('2026-11-12T12:00:00Z');
+ const list=[{id:'live',expires_at:'2026-11-12T12:00:01Z'},{id:'ended',expires_at:'2026-11-12T12:00:00Z'},{id:'legacy',status:'legacy_local'}];
+ assert.deepEqual(reports.withoutExpired(list,now).map(r=>r.id),['live','legacy']);
+ assert.deepEqual(reports.withoutExpired(undefined,now),[],'a missing partial list is empty, not an error');
+});
+test('GPS accuracy is sent as provenance only when the server would accept it',async()=>{
+ rpcHandler=async()=>({data:{ok:true,code:'OK',report:{id:'r1',status:'published'}},error:null});
+ await reports.createReport({...report,accuracy:12.5});
+ await reports.createReport({...report,accuracy:250000});
+ await reports.createReport({...report,accuracy:Number.NaN});
+ assert.deepEqual(rpcCalls.map(([,args])=>args.p_gps_accuracy_m),[12.5,null,null]);
+});
+test('a description without any letter or digit is refused before reaching the server',async()=>{
+ await assert.rejects(reports.createReport({...report,description:'​​ ...'}),err=>err.code==='VALIDATION_FAILED');
+ assert.equal(rpcCalls.length,0);
+ rpcHandler=async()=>({data:{ok:true,code:'OK',report:{id:'r1',status:'published'}},error:null});
+ await reports.createReport({...report,description:'Água na pista'});
+ assert.equal(rpcCalls.length,1,'accented Portuguese text is accepted');
+});
 test('held reports are never described as under an available review',()=>{
  const { submissionOutcome, ownStatusLabel }=load('src/features/reports/constants.js');
  const held=submissionOutcome('held');

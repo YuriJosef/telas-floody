@@ -8,7 +8,7 @@ import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 import '../../../App.css';
 import { env } from '../../config/env';
-import { createReport, listReports, newSubmissionId, subscribeToReports, updateReportStatus } from '../../features/reports/services/reportService';
+import { createReport, listReports, newSubmissionId, subscribeToReports, updateReportStatus, withoutExpired } from '../../features/reports/services/reportService';
 import { DEFAULT_HAZARD, REPORT_STATUS, submissionOutcome } from '../../features/reports/constants';
 import ReportFormScreen from '../../features/reports/screens/ReportFormScreen';
 import ModerationScreen from '../../features/reports/screens/ModerationScreen';
@@ -39,17 +39,21 @@ L.Icon.Default.mergeOptions({
 import Icons from '../../components/icons/Icons';
 import { LOCAL_AREA_PROFILES } from '../dashboard/indicators';
 
-function getExactPosition(getCurrentLocation) {
+// Resolves to { coords: [lat, lon], accuracy } where accuracy is the reported radius in metres or null.
+function getExactPosition(getCurrentPosition) {
   if (typeof navigator !== 'undefined' && navigator.geolocation?.getCurrentPosition) {
     return new Promise((resolve, reject) => {
       navigator.geolocation.getCurrentPosition(
-        ({ coords }) => resolve([coords.latitude, coords.longitude]),
+        ({ coords }) => resolve({
+          coords: [coords.latitude, coords.longitude],
+          accuracy: Number.isFinite(coords.accuracy) ? coords.accuracy : null,
+        }),
         reject,
         { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     });
   }
-  return getCurrentLocation();
+  return getCurrentPosition();
 }
 
 // Componente Principal do App
@@ -124,7 +128,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme, sessionN
   const [alturaCarro, setAlturaCarro] = useState('');
 
   const defaultCenter = [-8.05428, -34.8813];
-  const { getCurrentLocation } = useLocation();
+  const { getCurrentLocation, getCurrentPosition } = useLocation();
   const foreground = useForeground();
   const { start: startRouteRequest, cancel: cancelRouteRequest } = useLatestRequest();
   const { start: startWeatherRequest, cancel: cancelWeatherRequest } = useLatestRequest();
@@ -281,8 +285,9 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme, sessionN
         if (active && request === latest) {
           setReportError(error.message);
           setPublishedUnavailable(true);
-          // Nothing loaded yet: still show this device's legacy reports. A failed refresh keeps the last list.
-          if (error.partial) setReportes(current => current.length ? current : error.partial);
+          // Nothing loaded yet: still show this device's legacy reports. A failed refresh keeps the last
+          // list, minus reports whose 48 h lifetime has ended in the meantime.
+          setReportes(current => withoutExpired(current.length ? current : error.partial));
         }
       } finally {
         if (active && request === latest) setReportLoading(false);
@@ -485,6 +490,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme, sessionN
         locationSource: 'gps',
         submissionId: reportMeta.submissionId,
         observedAt: reportMeta.observedAt,
+        accuracy: reportMeta.accuracy,
       });
       setLastSubmission(result);
       setReportCoords(null);
@@ -517,8 +523,8 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme, sessionN
     setReportCoords(null);
     setReportMeta(null);
     setReportError('');
-    getExactPosition(getCurrentLocation)
-      .then(async (coords) => {
+    getExactPosition(getCurrentPosition)
+      .then(async ({ coords, accuracy }) => {
         if (signal.aborted) return;
         let address = null;
         try {
@@ -532,7 +538,7 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme, sessionN
           local: address || `Coordenadas ${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
         }));
         setReportCoords(coords);
-        setReportMeta({ submissionId: newSubmissionId(), observedAt: new Date().toISOString() });
+        setReportMeta({ submissionId: newSubmissionId(), observedAt: new Date().toISOString(), accuracy });
         setReportError('');
       })
       .catch(() => { if (!signal.aborted) setReportError('Não foi possível obter a posição. Confira a permissão de localização.'); })

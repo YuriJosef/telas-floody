@@ -22,7 +22,9 @@ let generation = 0;
 const inflight = new Map();
 
 const isText = value => typeof value === 'string' && value.trim().length > 0;
-const validPoint = (lat, lon) => Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180;
+// UX mirror of the server rule "at least one letter or digit" (Latin letters, accents included).
+const hasWords = value => /[0-9A-Za-zÀ-ɏ]/.test(value);
+const validPoint =(lat, lon) => Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180;
 
 export class ReportSubmissionError extends Error {
   constructor(message, code, retryable = false) {
@@ -130,6 +132,13 @@ export async function listReports() {
 }
 export const listLocalReports = listLegacyReports;
 
+// A list kept on screen after a failed refresh can outlive its reports: drop those whose 48 h
+// lifetime ended (by device clock). Legacy device reports have no expiry and are kept. Used only on
+// stale data; a fresh server list is already filtered by the server's clock.
+export function withoutExpired(list, now = Date.now()) {
+  return (Array.isArray(list) ? list : []).filter(report => !report?.expires_at || Date.parse(report.expires_at) > now);
+}
+
 // Views register here to reload after local changes, on returning to the foreground, on changes from
 // other tabs, and on the 30 s poll. Polling runs only while at least one view is mounted.
 export function subscribeToReports(callback) {
@@ -173,7 +182,7 @@ function rejection(result) {
 export async function createReport(report) {
   const client = requireBackend();
   if (!report || !validPoint(report.latitude, report.longitude)) throw new ReportSubmissionError('Obtenha a localização antes de enviar o relato.', 'VALIDATION_FAILED');
-  if (!isText(report.description) || report.description.length > 2000) throw new ReportSubmissionError('Descreva o que observou (até 2000 caracteres).', 'VALIDATION_FAILED');
+  if (!isText(report.description) || !hasWords(report.description) || report.description.length > 2000) throw new ReportSubmissionError('Descreva o que observou (até 2000 caracteres).', 'VALIDATION_FAILED');
   if (!isText(report.submissionId) || !isText(report.observedAt)) throw new ReportSubmissionError('Obtenha a localização novamente antes de enviar.', 'VALIDATION_FAILED');
   let response;
   try {
@@ -185,7 +194,8 @@ export async function createReport(report) {
       p_latitude: report.latitude,
       p_longitude: report.longitude,
       p_location_source: report.locationSource ?? 'gps',
-      p_gps_accuracy_m: Number.isFinite(report.accuracy) ? report.accuracy : null,
+      // Reported GPS accuracy (metres) is provenance, not proof; values the server would refuse are omitted.
+      p_gps_accuracy_m: Number.isFinite(report.accuracy) && report.accuracy >= 0 && report.accuracy <= 100000 ? report.accuracy : null,
       p_observed_at: report.observedAt,
     });
   } catch {

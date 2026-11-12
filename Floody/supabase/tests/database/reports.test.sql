@@ -4,7 +4,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path = public, extensions;
 
-select plan(62);
+select plan(81);
 
 -- Fixtures --------------------------------------------------------------------------------------
 insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at) values
@@ -180,6 +180,40 @@ set local role anon;
 select is((select count(*)::int from public.list_published_reports() where description = 'Rua totalmente alagada'), 0, 'withdrawn report disappears immediately');
 reset role;
 select throws_ok($$update app.reports set status = 'published' where description = 'Rua totalmente alagada'$$, '23514', null, 'withdrawn is terminal');
+
+-- 9. rules_version 2: whitespace-only text, trimming, withdrawn reports are not duplicates -----------
+select tests.as_user('33333333-3333-4333-8333-333333333333');
+select is((tests.submit('ffffffff-0000-4000-8000-000000000001', 'traffic', E'\n\t \n', -8.04, -34.89))->>'code',
+  'VALIDATION_FAILED', 'line breaks and tabs only are not a description');
+select is((tests.submit('ffffffff-0000-4000-8000-000000000002', 'traffic', U&'\200B\200B', -8.04, -34.89))->>'code',
+  'VALIDATION_FAILED', 'invisible characters only are not a description');
+select is((tests.submit('ffffffff-0000-4000-8000-000000000003', 'flood_impassable', E'\n Rua alagada perto da ponte \n', -8.04, -34.89))->'report'->>'status',
+  'published', 'text surrounded by line breaks is accepted');
+select is((tests.submit('ffffffff-0000-4000-8000-000000000003', 'flood_impassable', E'\n Rua alagada perto da ponte \n', -8.04, -34.89))->>'replayed',
+  'true', 'the same untrimmed payload still replays');
+select tests.as_owner();
+select is((select description from app.reports where client_submission_id = 'ffffffff-0000-4000-8000-000000000003'),
+  'Rua alagada perto da ponte', 'stored description is trimmed of all whitespace');
+select is((select rules_version::int from app.reports where client_submission_id = 'ffffffff-0000-4000-8000-000000000003'), 2, 'new reports use rules_version 2');
+select tests.as_user('33333333-3333-4333-8333-333333333333');
+select is((select public.withdraw_report((select id from public.my_reports() where description = 'Rua alagada perto da ponte'))->>'code'), 'OK', 'author withdraws to correct the report');
+select is((tests.submit('ffffffff-0000-4000-8000-000000000004', 'flood_impassable', 'Rua alagada perto da ponte, nível subindo', -8.0401, -34.89))->'report'->>'status',
+  'published', 'a correction after withdrawal is not held as a duplicate');
+select is((tests.submit('ffffffff-0000-4000-8000-000000000005', 'flood_impassable', 'Ainda alagada', -8.0402, -34.89))->'report'->>'status',
+  'held', 'a nearby duplicate of a live report is still held');
+select tests.as_owner();
+
+-- 10. rules_version 2: text rules without the known false positives -----------------------------
+select ok(not has_function_privilege('authenticated', 'app.text_hold_reasons(text)', 'execute'), 'text rules are not client-callable');
+select is(app.text_hold_reasons('Alagamento em -8.0512345678, -34.9012345678'), '{}'::text[], 'long decimal coordinates are not a phone');
+select is(app.text_hold_reasons('Rua alagada.Com carros parados'), '{}'::text[], 'a missing space before "Com" is not a link');
+select is(app.text_hold_reasons('Perto da Rua do Bom Jesus.Me ajudem'), '{}'::text[], 'a missing space before "Me" is not a link');
+select is(app.text_hold_reasons('Buraco na Av. Recife, 1234, CEP 50030-150'), '{}'::text[], 'an address with a number and CEP is clean');
+select is(app.text_hold_reasons('Promoção em golpe.com.br'), '{CONTAINS_URL}'::text[], 'a lower-case .com.br domain is a link');
+select is(app.text_hold_reasons('acesse news.golpe.com/x agora'), '{CONTAINS_URL}'::text[], 'a subdomain with a path is a link');
+select is(app.text_hold_reasons('Veja HTTPS://Exemplo.org'), '{CONTAINS_URL}'::text[], 'an upper-case http link is still caught');
+select is(app.text_hold_reasons('fale com fulano@exemplo.com'), '{CONTAINS_EMAIL}'::text[], 'an e-mail is held as e-mail, not also as a link');
+select is(app.text_hold_reasons('Ligue +55 81 99876-5432.'), '{CONTAINS_PHONE}'::text[], 'a phone number is still held');
 
 select * from finish();
 rollback;

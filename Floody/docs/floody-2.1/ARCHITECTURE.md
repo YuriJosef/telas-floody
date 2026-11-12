@@ -21,6 +21,7 @@ Este arquivo descreve **o que já existe no código**, **o que foi implementado 
 - **Autoridade lida do banco a cada chamada:** a verificação de e-mail vem de `auth.users.email_confirmed_at`; papéis vêm de `app.user_roles`. Claims do JWT e `user_metadata` nunca são considerados.
 - **Sem Edge Functions e sem Realtime** nesta versão. Os clientes atualizam por polling (30 s, só com o app ativo) e por notificação local.
 - **Migrations aplicadas no projeto remoto** em 2026-11-10: `20261110190000`, `20261110190100`, `20261110190200`.
+- **Migration só local (ainda não aplicada no remoto):** `20261112120000_submit_report_text_and_duplicates.sql` (regras versão 2; ver §4.4). Aplicar no remoto exige aprovação explícita.
 
 ## 2. Estado da implementação
 
@@ -93,7 +94,7 @@ Os testes de serviço usam um cliente Supabase **simulado**: provam o comportame
 | `location_label` | text null | até 200 caracteres; declarado pelo usuário, nunca verificado |
 | `location` | geometry(Point, 4326) | arredondado a 5 casas decimais na ingestão |
 | `location_source` | text | `gps` ou `manual` (procedência declarada, não prova) |
-| `gps_accuracy_m` | real null | declarado |
+| `gps_accuracy_m` | real null | declarado pelo aparelho (web e nativo enviam a precisão informada pelo GPS; procedência, não prova) |
 | `boundary_id` | int FK `app.rmr_boundaries` | versão do limite que validou o ponto |
 | `observed_at` | timestamptz | declarado pelo cliente |
 | `received_at` | timestamptz | horário do servidor |
@@ -114,7 +115,7 @@ Os testes de serviço usam um cliente Supabase **simulado**: provam o comportame
 | `app.rmr_boundary_parts` | **[OK]** | `ST_Subdivide(geom, 256)` com índice GiST, para a consulta de ponto |
 | `app.moderation_actions` | **[OK]** | Auditoria só de inserção, sem conteúdo do relato. Única atualização permitida: zerar `actor_id` quando a conta é excluída |
 | `app.user_roles` | **[OK]** (vazia) | Papéis `reviewer` e `admin`; nenhuma função a preenche ainda |
-| `app.app_config` | **[OK]** | `submit_limit_per_hour = 5`, `submit_limit_per_day = 20`, `public_list_limit = 500`, `review_window_hours = 24`, `rules_version = 1` |
+| `app.app_config` | **[OK]** | `submit_limit_per_hour = 5`, `submit_limit_per_day = 20`, `public_list_limit = 500`, `review_window_hours = 24`, `rules_version = 2` (1 no remoto até a migration `20261112120000` ser aplicada) |
 | `app.report_flags`, `app.role_events`, `app.moderation_terms`, `app.maintenance_runs` | **[ADIADO]** | Serão adicionadas por migrations novas, sem alterar as existentes |
 
 ### 3.3 Onde cada invariante é garantida [OK]
@@ -164,7 +165,7 @@ Ordem das verificações (faz parte do contrato):
 2. Advisory lock por usuário.
 3. Consulta de idempotência por `(auth.uid(), client_submission_id)`: mesmo hash → `OK` com `replayed: true`; hash diferente → `IDEMPOTENCY_CONFLICT`. Vem antes da janela de tempo de propósito.
 4. E-mail verificado em `auth.users` (`EMAIL_NOT_VERIFIED`; conta anônima também é rejeitada; conta banida → `FORBIDDEN`).
-5. Validação de campos (`VALIDATION_FAILED` com `details.fields`).
+5. Validação de campos (`VALIDATION_FAILED` com `details.fields`). Descrição e local são aparados de todo espaço em branco nas pontas (quebras de linha e tabulações incluídas); a descrição precisa ter ao menos uma letra ou um dígito. O hash de idempotência continua calculado como na versão 1, para que reenvios antigos ainda sejam reconhecidos.
 6. Janela de tempo pelo relógio do servidor (`OBSERVED_AT_IN_FUTURE` acima de 2 min; `OBSERVATION_TOO_OLD` acima de 6 h).
 7. Limite geográfico (`OUTSIDE_SERVICE_AREA`; sem limite ativo → `SERVICE_UNAVAILABLE`, falha fechada).
 8. Limites de envio (`RATE_LIMITED` com `retry_after_s`).
@@ -172,13 +173,13 @@ Ordem das verificações (faz parte do contrato):
 
 Resposta: `{ ok, code, retryable, replayed, report: { id, status, expires_at }, details }`.
 
-### 4.4 Regras de moderação, versão 1 [OK]
+### 4.4 Regras de moderação, versão 2 [OK local] (versão 1 no remoto)
 
 O relato fica `held` (não público) se:
 
-- a descrição ou o local contém URL ou e-mail;
-- contém um telefone brasileiro (DDD + 8 ou 9 dígitos; um CEP não conta);
-- o mesmo autor enviou o mesmo tipo a até 100 m nos últimos 30 minutos;
+- a descrição ou o local contém URL ou e-mail (versão 2: `http(s)://` e `www.` em qualquer caixa; domínio solto só em minúsculas e sem `.me`, para que "alagada.Com" ou "Jesus.Me" sem espaço após o ponto não contem como link);
+- contém um telefone brasileiro (DDD + 8 ou 9 dígitos; um CEP não conta; versão 2: dígitos logo após ponto ou vírgula decimal, como em coordenadas, também não contam);
+- o mesmo autor enviou o mesmo tipo a até 100 m nos últimos 30 minutos (versão 2: relatos que o próprio autor retirou não contam, para permitir retirar e corrigir; continuam contando no limite de envios);
 - o autor tem 2 ou mais relatos rejeitados em 30 dias.
 
 **Limitação desta versão:** não existe revisão manual **[ADIADO]**. Um relato retido nunca é publicado; pelo status efetivo ele passa a `expired` 24 h depois do recebimento. Nenhum timeout publica um relato. O app informa isso ao autor ("Relato recebido, mas não publicado… a verificação manual ainda não está disponível nesta versão") e não deve sugerir que alguém vai revisar o relato. As regras de retenção também retêm envios legítimos (por exemplo, um segundo relato do mesmo tipo no mesmo lugar em 30 minutos) **[DECISÃO]**. A lista de termos bloqueados (`app.moderation_terms`) está **[ADIADO]**.
@@ -265,7 +266,7 @@ Custo estimado do polling: 2 chamadas por minuto por tela ativa, a uma função 
 
 ### 7.3 Relatos antigos (`floody_reports`) [OK]
 
-A chave local do Floody 2.0 não é mais gravada. O conteúdo aparece só para leitura como "Salvo só neste dispositivo · não publicado" e **nunca** é enviado ao servidor. Esses relatos continuam visíveis mesmo sem backend configurado ou com falha de rede: `listReports()` rejeita (o erro é exibido), mas o erro traz os relatos locais em `partial`.
+A chave local do Floody 2.0 não é mais gravada. O conteúdo aparece só para leitura como "Salvo só neste dispositivo · não publicado" e **nunca** é enviado ao servidor. Esses relatos continuam visíveis mesmo sem backend configurado ou com falha de rede: `listReports()` rejeita (o erro é exibido), mas o erro traz os relatos locais em `partial`. Quando uma atualização falha, a tela mantém a última lista, mas remove os relatos cujo `expires_at` já passou pelo relógio do aparelho (`withoutExpired`); relatos retirados por outras pessoas só somem na próxima atualização bem-sucedida.
 
 ### 7.4 Sessões
 
@@ -296,19 +297,19 @@ Arquivos que nunca entram no Git: `Floody/.env.local`, `Floody/supabase/.temp/` 
 
 ## 10. Decisões pendentes [DECISÃO]
 
-1. Limite de sinalizações para ocultar e se só contas verificadas contam (recomendado: 3, só verificadas).
-2. Prazo de revisão de relatos retidos (implementado: 24 h, depois `expired`).
+1. **Decidido (2026-11-12):** 3 sinalizações de contas distintas com e-mail verificado ocultam o relato até a revisão. A sinalização em si continua **[ADIADO]**.
+2. **Decidido (2026-11-12):** 24 h para relatos retidos ou ocultos; depois `expired`. Nenhum prazo republica um relato.
 3. Relato aprovado após retenção: 48 h a partir da aprovação ou limitado a `received_at + 48 h`.
 4. Política de retenção e purge de relatos encerrados. Hoje o CHECK só calcula `purge_after = closed_at + 7 dias` para estados terminais; **nada é apagado** (ver seção 5.1).
 5. Exclusão de conta: detalhes de anonimização e retenção.
 6. Retenção do log de auditoria.
-7. Regras de moderação e responsável pela lista de termos.
+7. Regras de moderação: **decidido (2026-11-12)** restringir as regras de telefone e link para reduzir falsos positivos (regras versão 2, `app.text_hold_reasons`). Ainda pendente: responsável pela lista de termos.
 8. Limites de envio e CAPTCHA no cadastro.
-9. Precisão pública das coordenadas (implementado: 4 casas decimais).
-10. Sinalização por contas não verificadas versus confirmação obrigatória para entrar.
+9. **Decidido (2026-11-12):** coordenadas públicas com 4 casas decimais (~11 m); o autor vê a precisão completa.
+10. **Decidido (2026-11-12):** a confirmação de e-mail continua obrigatória para entrar; portanto só contas verificadas podem sinalizar. Isso substitui o requisito anterior de permitir sinalização por contas não verificadas (no Supabase, desligar a confirmação marca todos como confirmados e quebraria a regra de envio).
 11. Geocodificação reversa no fluxo de relato.
 12. Armazenamento criptografado dos tokens no nativo.
-13. Licença e definição legal do limite da RMR.
+13. Licença e definição legal do limite da RMR. Pesquisa (2026-11-12): dados do IBGE costumam ser tratados como de uso livre com citação obrigatória da fonte ("Fonte: IBGE"); as condições exatas estão na nota "Malha Municipal Digital e Áreas Territoriais 2025: Informações Técnicas e Legais", ainda não lida na íntegra. A malha é representação cartográfica, não demarcação legal. **Decidido (2026-11-12):** usar os dados do IBGE com o crédito "Fonte: IBGE" e o aviso "representação cartográfica, não demarcação legal" nas telas de relato (web e nativo). A leitura integral da nota técnica e legal de 2025 continua recomendada.
 14. SMTP próprio para produção.
 
 ## 11. Orientações para agentes de IA e desenvolvedores
