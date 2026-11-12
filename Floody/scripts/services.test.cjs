@@ -143,6 +143,53 @@ test('a loopback Supabase URL is detected so a phone build can warn in developme
  assert.equal(isLoopbackUrl('http://127.0.0.1:54321'),true);assert.equal(isLoopbackUrl('http://localhost:54321'),true);
  assert.equal(isLoopbackUrl('https://gssztjlcefjayzgvqsck.supabase.co'),false);assert.equal(isLoopbackUrl(''),false);
 });
+test('legacy device reports stay readable when the published list is unavailable, without hiding the failure',async()=>{
+ const legacy=[{id:'old',latitude:-8,longitude:-34,description:'Antigo',location_label:'Recife',hazard_type:'Obra',status:'Pendente',occurred_at:'2026-11-01T00:00:00Z'}];
+ data.set('floody_reports',JSON.stringify(legacy));
+ const clientModule=cache.get(path.resolve('src/services/supabase/client.web.js'));
+ clientModule.exports.supabase=null;
+ try {
+  await assert.rejects(reports.listReports(),err=>err.code==='NOT_CONFIGURED'&&/não configurado/.test(err.message)
+   &&Array.isArray(err.partial)&&err.partial.map(r=>[r.id,r.status]).join()==='old,legacy_local');
+ } finally { clientModule.exports.supabase=fakeSupabase; }
+ rpcHandler=async()=>({data:null,error:{message:'offline'}});
+ await assert.rejects(reports.listReports(),err=>/relatos publicados/.test(err.message)&&err.partial.map(r=>r.id).join()==='old');
+ rpcHandler=async()=>{throw new TypeError('Failed to fetch');};
+ await assert.rejects(reports.listReports(),err=>err.partial.map(r=>r.id).join()==='old','an ambiguous network failure still exposes the device-only reports');
+ assert.ok(!rpcCalls.some(([name])=>name==='submit_report'),'legacy reports are never uploaded');
+ assert.equal(data.get('floody_reports'),JSON.stringify(legacy),'legacy storage is left untouched');
+});
+test('held reports are never described as under an available review',()=>{
+ const { submissionOutcome, ownStatusLabel }=load('src/features/reports/constants.js');
+ const held=submissionOutcome('held');
+ assert.doesNotMatch(`${held.title} ${held.body}`,/para revisão|em revisão/i);
+ assert.match(held.body,/não foi publicado/);assert.match(held.body,/não está disponível/);assert.match(held.body,/24 horas/);
+ assert.doesNotMatch(ownStatusLabel('held'),/revisão/i);assert.doesNotMatch(ownStatusLabel('hidden'),/revisão/i);
+ const published=submissionOutcome('published');
+ assert.match(published.body,/48 horas/);assert.match(published.body,/não verificado/);
+});
+test('sign-out is judged by the session actually left on the device',async()=>{
+ const { signOutThisDevice, accountFromSession }=load('src/store/authSession.js');
+ const fakeAuth=({ signOut, session })=>({ signOut, getSession:async()=>({data:{session:typeof session==='function'?session():session},error:null}) });
+ const user={id:'u1',email:'pessoa@floody.test',email_confirmed_at:'2026-11-10T00:00:00Z'};
+ let stored={user};
+ const ok=await signOutThisDevice(fakeAuth({signOut:async()=>{stored=null;return{error:null};},session:()=>stored}));
+ assert.deepEqual(ok,{signedOut:true});
+ stored={user};
+ const offline=await signOutThisDevice(fakeAuth({signOut:async()=>{stored=null;return{error:{name:'AuthRetryableFetchError',message:'Network request failed'}};},session:()=>stored}));
+ assert.deepEqual(offline,{signedOut:true},'server revocation failed but this device no longer holds a session');
+ stored={user};
+ const storageFailure=await signOutThisDevice(fakeAuth({signOut:async()=>{throw new Error('storage unavailable');},session:()=>stored}));
+ assert.equal(storageFailure.signedOut,false);assert.match(storageFailure.error,/Não foi possível sair/);
+ const keptByLibrary=await signOutThisDevice(fakeAuth({signOut:async()=>({error:{message:'boom'}}),session:{user}}));
+ assert.equal(keptByLibrary.signedOut,false,'an error is never assumed to mean signed out');
+ const unknown=await signOutThisDevice({signOut:async()=>({error:null}),getSession:async()=>{throw new Error('storage unavailable');}});
+ assert.equal(unknown.signedOut,false,'an unreadable session is treated as still present');
+ assert.equal(accountFromSession(null),null);
+ const account=accountFromSession({user});
+ assert.deepEqual(account,{id:'u1',nome:'Minha conta',tipo:'condutor',guest:false,emailVerified:true});
+ assert.ok(!JSON.stringify(account).includes('@'),'the app user object never carries the e-mail');
+});
 test('local clients cannot approve reports',async()=>{
  await assert.rejects(reports.updateReportStatus('p1','published'),/backend/);
 });

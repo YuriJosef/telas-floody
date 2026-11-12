@@ -34,12 +34,11 @@ function AppContent() {
     storage.setItem('floody_theme', theme).catch(() => {});
   }, [theme, themeLoaded]);
 
+  const [sessionNotice, setSessionNotice] = useState('');
+  // logout() never throws; a failed sign-out keeps the account and explains why.
   const handleLogout = async () => {
-    try {
-      await logout();
-    } catch (error) {
-      console.error(error);
-    }
+    const result = await logout();
+    setSessionNotice(result?.error ?? '');
   };
 
   const toggleTheme = () => {
@@ -52,7 +51,8 @@ function AppContent() {
         loading={authLoading}
         authenticated={Boolean(user)}
         auth={<AuthNavigator onLogin={login} theme={theme} onToggleTheme={toggleTheme} icons={Icons} />}
-        app={user && <MainApp user={user} onLogout={handleLogout} theme={theme} onToggleTheme={toggleTheme} />}
+        app={user && <MainApp user={user} onLogout={handleLogout} theme={theme} onToggleTheme={toggleTheme}
+          sessionNotice={sessionNotice} onDismissSessionNotice={() => setSessionNotice('')} />}
       />
     </>
   );

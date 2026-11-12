@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../services/supabase/client';
 import { authMessage } from './authMessages';
+import { accountFromSession, signOutThisDevice } from './authSession';
 
 const AuthContext = createContext(null);
 
@@ -8,14 +9,6 @@ const AuthContext = createContext(null);
 // submit is decided by the server on every request; `emailVerified` here is only for the UI.
 // No client-side roles: `tipo` is always 'condutor'.
 const guestUser = name => ({ id: 'guest', nome: String(name ?? '').trim().slice(0, 60) || 'Visitante', tipo: 'condutor', guest: true });
-const accountUser = user => ({
-  id: user.id,
-  // No e-mail or e-mail-derived name in the app's user object: the UI shows only "Minha conta".
-  nome: 'Minha conta',
-  tipo: 'condutor',
-  guest: false,
-  emailVerified: Boolean(user.email_confirmed_at),
-});
 
 export function AuthProvider({ children }) {
   const [guest, setGuest] = useState(null);
@@ -26,11 +19,11 @@ export function AuthProvider({ children }) {
     if (!supabase) return undefined;
     let active = true;
     supabase.auth.getSession()
-      .then(({ data }) => { if (active) setAccount(data.session?.user ? accountUser(data.session.user) : null); })
+      .then(({ data }) => { if (active) setAccount(accountFromSession(data.session)); })
       .catch(() => {})
       .finally(() => { if (active) setLoading(false); });
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (active) setAccount(session?.user ? accountUser(session.user) : null);
+      if (active) setAccount(accountFromSession(session));
     });
     return () => { active = false; data.subscription.unsubscribe(); };
   }, []);
@@ -64,13 +57,15 @@ export function AuthProvider({ children }) {
     } catch (error) { return { error: authMessage(error) }; }
   }, []);
 
+  // Resolves to {} or { error }; never throws. The UI follows the session left on the device, so a
+  // failed sign-out keeps showing the account instead of pretending it is gone.
   const logout = useCallback(async () => {
     setGuest(null);
-    if (supabase && account) {
-      // Sign out this device only, not the user's other sessions.
-      const { error } = await supabase.auth.signOut({ scope: 'local' });
-      if (error) setAccount(null);
-    }
+    if (!supabase || !account) return {};
+    const result = await signOutThisDevice(supabase.auth);
+    if (result.signedOut) { setAccount(null); return {}; }
+    if (result.session) setAccount(accountFromSession(result.session));
+    return { error: result.error };
   }, [account]);
 
   const value = useMemo(() => ({

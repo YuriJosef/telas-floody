@@ -9,7 +9,7 @@ import L from 'leaflet';
 import '../../../App.css';
 import { env } from '../../config/env';
 import { createReport, listReports, newSubmissionId, subscribeToReports, updateReportStatus } from '../../features/reports/services/reportService';
-import { DEFAULT_HAZARD, REPORT_STATUS } from '../../features/reports/constants';
+import { DEFAULT_HAZARD, REPORT_STATUS, submissionOutcome } from '../../features/reports/constants';
 import ReportFormScreen from '../../features/reports/screens/ReportFormScreen';
 import ModerationScreen from '../../features/reports/screens/ModerationScreen';
 import MyReportsPanel from '../../features/reports/components/MyReportsPanel.web';
@@ -53,12 +53,13 @@ function getExactPosition(getCurrentLocation) {
 }
 
 // Componente Principal do App
-export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
+export default function MainApp({ user, onLogout, theme, onToggleTheme, sessionNotice, onDismissSessionNotice }) {
   const [activeTab, setActiveTab] = useState(user.tipo === 'admin' ? 'admin_reportes' : 'dashboard');
   const [isMounted, setIsMounted] = useState(false);
   const [veiculos, setVeiculos] = useState([]);
   const [reportes, setReportes] = useState([]);
   const [reportLoading, setReportLoading] = useState(true);
+  const [publishedUnavailable, setPublishedUnavailable] = useState(false);
   const [reportError, setReportError] = useState('');
   const [selectedReport, setSelectedReport] = useState(null);
   const [reportCoords, setReportCoords] = useState(null);
@@ -275,9 +276,14 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
       const request = ++latest;
       try {
         const data = await listReports();
-        if (active && request === latest) setReportes(data);
+        if (active && request === latest) { setReportes(data); setPublishedUnavailable(false); }
       } catch (error) {
-        if (active && request === latest) setReportError(error.message);
+        if (active && request === latest) {
+          setReportError(error.message);
+          setPublishedUnavailable(true);
+          // Nothing loaded yet: still show this device's legacy reports. A failed refresh keeps the last list.
+          if (error.partial) setReportes(current => current.length ? current : error.partial);
+        }
       } finally {
         if (active && request === latest) setReportLoading(false);
       }
@@ -550,9 +556,10 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
   return (
     <AppShell user={user} activeTab={activeTab} onTabChange={handleTabChange} theme={theme} onToggleTheme={onToggleTheme} onLogout={onLogout}>
         <p className="local-notice">Relatos de usuários não são verificados · Veículos e favoritos ficam neste dispositivo.</p>
+        {sessionNotice && <InlineAlert onDismiss={onDismissSessionNotice}>{sessionNotice}</InlineAlert>}
         {reportError && <InlineAlert onDismiss={() => setReportError('')}>{reportError}</InlineAlert>}
         {activeTab === 'dashboard' && (
-          <DashboardScreen weatherError={weatherError} buscaCentralQuery={buscaCentralQuery} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} centralAddressSelected={selectedCentralAddressRef.current?.name === buscaCentralQuery} onSelectAddress={selectCentralAddress} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
+          <DashboardScreen weatherError={weatherError} publishedUnavailable={publishedUnavailable} buscaCentralQuery={buscaCentralQuery} cidadeAtualNome={cidadeAtualNome} expandedZoneId={expandedZoneId} favoritos={favoritos} filtroApenasFavoritos={filtroApenasFavoritos} filtroTextoZona={filtroTextoZona} handleCentralInputChange={handleCentralInputChange} handleCentralSearch={handleCentralSearch} loadingApi={loadingApi} nearbyAreas={LOCAL_AREA_PROFILES} weatherReading={weatherReading} reportLoading={reportLoading} reportesExibidos={reportesExibidos} centralAddressSelected={selectedCentralAddressRef.current?.name === buscaCentralQuery} onSelectAddress={selectCentralAddress} setExpandedZoneId={setExpandedZoneId} setFiltroApenasFavoritos={setFiltroApenasFavoritos} setFiltroTextoZona={setFiltroTextoZona} toggleFavorito={toggleFavorito} />
         )}
 
         {/* MAPA COM NAVEGAÇÃO AO VIVO E MANCHAS ORGÂNICAS */}
@@ -592,13 +599,8 @@ export default function MainApp({ user, onLogout, theme, onToggleTheme }) {
               <div className="confirmation-icon" aria-hidden="true">
                 <Icons.Check />
               </div>
-              {lastSubmission?.status === 'held' ? <>
-                <h1 id="report-saved-title">Relato recebido para revisão</h1>
-                <p>O relato foi armazenado, mas ficou retido para revisão e não está público. Ele não foi enviado a serviços de emergência.</p>
-              </> : <>
-                <h1 id="report-saved-title">Relato publicado como não verificado</h1>
-                <p>Outros usuários podem vê-lo no mapa por até 48 horas, marcado como relato não verificado. Ele não foi enviado a serviços de emergência.</p>
-              </>}
+              <h1 id="report-saved-title">{submissionOutcome(lastSubmission?.status).title}</h1>
+              <p>{submissionOutcome(lastSubmission?.status).body}</p>
               <button className="btn-primary" onClick={() => setActiveTab('dashboard')}>Voltar ao painel</button>
             </section>
           </div>

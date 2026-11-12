@@ -7,7 +7,7 @@ import { useLocation } from '../../../hooks/useLocation';
 import { useAuth } from '../../../store/AuthContext';
 import { reverseGeocode } from '../../map/services/geocodingService';
 import { createReport, newSubmissionId } from '../services/reportService';
-import { DEFAULT_HAZARD, HAZARDS } from '../constants';
+import { DEFAULT_HAZARD, HAZARDS, submissionOutcome } from '../constants';
 import MyReportsPanel from '../components/MyReportsPanel.native';
 export default function ReportScreen({ onDone }) {
   const { colors, styles } = useNativeTheme();
@@ -55,11 +55,9 @@ export default function ReportScreen({ onDone }) {
     catch (error) { setMessage(error.message); }
     finally { setBusy(false); }
   }
-  if (saved) return <Page title={saved.status === 'held' ? 'Relato recebido para revisão' : 'Relato publicado como não verificado'}>
+  if (saved) return <Page title={submissionOutcome(saved.status).title}>
     <Card style={{ backgroundColor: colors.official }}>
-      <Text style={[styles.text, { color: colors.onOfficial }]}>{saved.status === 'held'
-        ? 'O relato foi armazenado, mas ficou retido para revisão e não está público. Ele não foi enviado a serviços de emergência.'
-        : 'Outros usuários podem vê-lo no mapa por até 48 horas, marcado como relato não verificado. Ele não foi enviado a serviços de emergência.'}</Text>
+      <Text style={[styles.text, { color: colors.onOfficial }]}>{submissionOutcome(saved.status).body}</Text>
       <Button title="Voltar ao painel" icon="check_circle" onPress={onDone} />
     </Card>
   </Page>;

@@ -29,7 +29,12 @@ export default function DashboardScreen({ onMap }) {
     const load = () => {
       const request = ++latest;
       return listReports().then(data => { if (active && request === latest) { setReports(data); setError(''); } })
-        .catch(error => { if (active && request === latest) setError(error.message); });
+        .catch(error => {
+          if (!active || request !== latest) return;
+          setError(error.message);
+          // Nothing loaded yet: still show this device's legacy reports. A failed refresh keeps the last list.
+          if (error.partial) setReports(current => current.length ? current : error.partial);
+        });
     };
     load(); const unsubscribe = subscribeToReports(load);
     return () => { active = false; unsubscribe(); };

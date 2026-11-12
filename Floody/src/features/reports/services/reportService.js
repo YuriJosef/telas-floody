@@ -114,9 +114,19 @@ export async function listPublishedReports() {
 }
 
 // Published reports from the server followed by this device's legacy, never-published reports.
+// If the published list cannot be loaded (backend not configured, network or server failure), the
+// call still rejects so the failure is shown, but the error carries the legacy reports in `partial`:
+// they live on this device and must stay readable without the server.
 export async function listReports() {
-  const [published, legacy] = await Promise.all([listPublishedReports(), listLegacyReports()]);
-  return [...published, ...legacy];
+  const [published, legacy] = await Promise.allSettled([listPublishedReports(), listLegacyReports()]);
+  const local = legacy.status === 'fulfilled' ? legacy.value : [];
+  if (published.status === 'rejected') {
+    // A fresh error: the original may be shared by concurrent readers of the same in-flight request.
+    const reason = published.reason;
+    throw Object.assign(new Error(reason?.message || 'Não foi possível carregar os relatos publicados.'),
+      { code: reason?.code, partial: local });
+  }
+  return [...published.value, ...local];
 }
 export const listLocalReports = listLegacyReports;
 

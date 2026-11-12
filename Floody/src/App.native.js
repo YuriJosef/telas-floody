@@ -86,6 +86,8 @@ function NativeShell({ theme, toggleTheme }) {
   const { user, login, logout } = useAuth();
   const { colors, styles } = useNativeTheme();
   const [tab, setTab] = useState('dashboard');
+  // A failed sign-out keeps the account (the session is still on the device) and says so.
+  const [sessionNotice, setSessionNotice] = useState('');
   const [center, setCenter] = useState([-8.05428, -34.8813]);
   return <SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
     <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
@@ -99,9 +101,11 @@ function NativeShell({ theme, toggleTheme }) {
         </View>
         <View style={local.actions}>
           <Button title={theme === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'} icon={theme === 'dark' ? 'light_mode' : 'dark_mode'} iconOnly variant="tonal" onPress={toggleTheme} />
-          <Button title="Sair" icon="logout" variant="subtle" accessibilityLabel={user.guest ? 'Voltar à tela inicial' : 'Sair da conta'} onPress={() => { setTab('dashboard'); logout(); }} />
+          <Button title="Sair" icon="logout" variant="subtle" accessibilityLabel={user.guest ? 'Voltar à tela inicial' : 'Sair da conta'} onPress={() => { setTab('dashboard'); logout().then(result => setSessionNotice(result?.error ?? '')); }} />
         </View>
       </View>
+      {sessionNotice ? <Text accessibilityRole="alert" accessibilityLiveRegion="polite" onPress={() => setSessionNotice('')}
+        style={[styles.text, { paddingHorizontal: 16, paddingBottom: 6 }]}>{sessionNotice}</Text> : null}
       <View style={styles.fill}>
         {tab === 'dashboard' && <DashboardScreen onMap={coords => { setCenter(coords); setTab('map'); }} />}
         {tab === 'map' && <MapScreen center={center} />}

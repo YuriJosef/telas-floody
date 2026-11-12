@@ -4,7 +4,7 @@ import { formatDateTime } from '../../utils/formatters';
 import { usePrecipitationDetails } from '../dashboard/hooks/usePrecipitationDetails';
 import Icons from '../../components/icons/Icons';
 
-export default function DashboardScreen({ weatherError, buscaCentralQuery, cidadeAtualNome, expandedZoneId, favoritos, filtroApenasFavoritos, filtroTextoZona, handleCentralInputChange, handleCentralSearch, loadingApi, nearbyAreas, weatherReading, reportLoading, reportesExibidos, centralAddressSelected, onSelectAddress, setExpandedZoneId, setFiltroApenasFavoritos, setFiltroTextoZona, toggleFavorito }) {
+export default function DashboardScreen({ weatherError, publishedUnavailable, buscaCentralQuery, cidadeAtualNome, expandedZoneId, favoritos, filtroApenasFavoritos, filtroTextoZona, handleCentralInputChange, handleCentralSearch, loadingApi, nearbyAreas, weatherReading, reportLoading, reportesExibidos, centralAddressSelected, onSelectAddress, setExpandedZoneId, setFiltroApenasFavoritos, setFiltroTextoZona, toggleFavorito }) {
   const details = usePrecipitationDetails(weatherReading);
   return (
     <div className="scrollable-tab dashboard">
@@ -50,7 +50,9 @@ export default function DashboardScreen({ weatherError, buscaCentralQuery, cidad
         </header>
         <label className="input-group">Filtrar registros<input aria-label="Filtrar ocorrências" placeholder="Local ou tipo de ocorrência" value={filtroTextoZona} onChange={e => setFiltroTextoZona(e.target.value)} /></label>
         {reportLoading ? <p role="status">Carregando relatos…</p> : reportesExibidos.length === 0
-          ? <div className="empty-state"><Icons.Map /><div><h3>Nenhum registro para exibir</h3><p>Nenhum relato publicado no momento. A ausência de relatos não confirma ausência de risco.</p></div></div>
+          ? <div className="empty-state"><Icons.Map /><div><h3>Nenhum registro para exibir</h3><p>{publishedUnavailable
+            ? 'Não foi possível carregar os relatos publicados. Tente novamente mais tarde.'
+            : 'Nenhum relato publicado no momento.'} A ausência de relatos não confirma ausência de risco.</p></div></div>
           : reportesExibidos.map(report => <article className="report-row" key={report.id}>
             <button className="report-disclosure" aria-expanded={expandedZoneId === report.id} onClick={() => setExpandedZoneId(expandedZoneId === report.id ? null : report.id)}>
               <strong>{report.location_label}</strong><span>{report.hazard_type} · {report.status_label} · {formatDateTime(report.occurred_at)}</span>

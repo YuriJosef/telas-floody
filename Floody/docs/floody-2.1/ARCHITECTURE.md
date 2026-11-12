@@ -1,6 +1,6 @@
 # Floody 2.1 — Arquitetura Supabase, segurança e estado da implementação
 
-Documento técnico da equipe Floody. Atualizado em 2026-11-11.
+Documento técnico da equipe Floody. Atualizado em 2026-11-12 (auditoria do PR #3).
 
 Este arquivo descreve **o que já existe no código**, **o que foi implementado mas ainda não foi verificado em aparelhos físicos** e **o que continua planejado ou adiado**. O código do repositório é a fonte de verdade: em caso de divergência, confira os arquivos citados.
 
@@ -37,7 +37,7 @@ Este arquivo descreve **o que já existe no código**, **o que foi implementado 
 | Verificação somente leitura no projeto remoto (migrations, grants, RLS, limite) | **[OK]** remoto | executada em 2026-11-10 |
 | `app.report_flags`, `app.role_events`, `app.moderation_terms`, `app.maintenance_runs` | **[ADIADO]** | — |
 | `flag_report`, `review_queue`, `review_report`, `list_reviewers`, `set_reviewer`, `delete_my_account` | **[ADIADO]** | — |
-| `app.run_lifecycle_maintenance()` com `pg_cron` (expiração materializada, purge de 7 dias) | **[ADIADO]** | — |
+| `app.run_lifecycle_maintenance()` com `pg_cron` (expiração materializada, purge de 7 dias). **Hoje nada é apagado**: ver seção 5.1 | **[ADIADO]** | — |
 | Teste de concorrência com duas conexões (Node) | **[ADIADO]** | — |
 
 ### 2.2 Aplicativo (web e nativo)
@@ -71,7 +71,8 @@ Este arquivo descreve **o que já existe no código**, **o que foi implementado 
 | Comando (em `Floody/`) | O que cobre | Requisitos |
 |---|---|---|
 | `npm.cmd run check` | Bindings e imports por plataforma (`scripts/check.cjs`) | Node |
-| `npm.cmd test` | 34 testes de serviços (`scripts/services.test.cjs`), com cliente Supabase simulado | Node |
+| `npm.cmd test` | 37 testes de serviços (`scripts/services.test.cjs`), com cliente Supabase simulado | Node |
+| `node scripts/supabase-local.e2e.mjs` | Fluxos reais contra o Supabase **local**: cadastro e confirmação, logout (normal, sem rede, falha de armazenamento), restauração de sessão, troca de conta, envio concorrente idempotente, isolamento entre contas e retirada (`scripts/supabase-local.e2e.mjs`) | Docker + `npx.cmd supabase start` |
 | `npx.cmd supabase test db` | 62 asserções pgTAP contra o banco local | Docker + Supabase CLI |
 | `npx.cmd expo export --platform web\|ios\|android` | Validação de bundle | Node |
 
@@ -180,7 +181,7 @@ O relato fica `held` (não público) se:
 - o mesmo autor enviou o mesmo tipo a até 100 m nos últimos 30 minutos;
 - o autor tem 2 ou mais relatos rejeitados em 30 dias.
 
-Sem a tela de revisão **[ADIADO]**, um relato retido nunca é publicado: ele expira após 24 h. Nenhum timeout publica um relato. A lista de termos bloqueados (`app.moderation_terms`) está **[ADIADO]**.
+**Limitação desta versão:** não existe revisão manual **[ADIADO]**. Um relato retido nunca é publicado; pelo status efetivo ele passa a `expired` 24 h depois do recebimento. Nenhum timeout publica um relato. O app informa isso ao autor ("Relato recebido, mas não publicado… a verificação manual ainda não está disponível nesta versão") e não deve sugerir que alguém vai revisar o relato. As regras de retenção também retêm envios legítimos (por exemplo, um segundo relato do mesmo tipo no mesmo lugar em 30 minutos) **[DECISÃO]**. A lista de termos bloqueados (`app.moderation_terms`) está **[ADIADO]**.
 
 ## 5. Ciclo de vida do relato
 
@@ -200,6 +201,30 @@ Sem a tela de revisão **[ADIADO]**, um relato retido nunca é publicado: ele ex
 
 O trigger `app.reports_guard` já recusa qualquer transição fora desta tabela, inclusive para as funções futuras.
 
+### 5.1 O que o banco garante hoje sobre retenção
+
+Sem o job de manutenção **[ADIADO]**, nenhuma linha de `app.reports` é apagada. Na prática:
+
+| Situação | Visível ao público | `closed_at` / `purge_after` | Apagado? |
+|---|---|---|---|
+| `published` dentro de 48 h | sim | nulos | não |
+| `published` depois de `expires_at` | **não** (predicado em toda leitura) | **nulos** (o status continua `published` no banco) | **não** |
+| `held` | não | nulos; depois de 24 h o status efetivo é `expired` | **não** |
+| `withdrawn` | não, na hora | definidos (`purge_after = closed_at + 7 dias`) | **não**; `purge_after` é só uma marcação |
+
+Consequências: os requisitos de "7 dias de retenção antes do purge" e de anonimização na exclusão de conta **ainda não são cumpridos**. Relatos expirados, retidos e retirados ficam no banco por tempo indeterminado, com coordenadas de 5 casas decimais, descrição, rótulo de local e `author_id`. O autor continua vendo esses relatos em `my_reports()` (até 200). Ao excluir uma conta em `auth.users`, `author_id` vira nulo, mas o conteúdo permanece.
+
+**Proposta para implementar (não implementada, exige aprovação):**
+
+1. Nova migration com `app.run_lifecycle_maintenance()` (sem grants para clientes), em lotes:
+   - materializar `published`/`hidden` vencidos como `expired` com `closed_at = expires_at` (horário lógico, não o da execução);
+   - materializar `held` vencidos como `expired` com `closed_at = review_deadline_at`;
+   - apagar linhas com `purge_after <= now()` (incluindo os vencidos já materializados) e registrar contagens em `app.maintenance_runs`.
+2. Agendamento com `pg_cron` a cada 5 minutos no projeto remoto.
+3. Testes pgTAP com dados retroativos para cada transição e para o purge.
+
+Consequências a aprovar: é uma **exclusão definitiva em produção**; relatos antigos com mais de 7 dias desde o fechamento seriam apagados na primeira execução; `my_reports()` deixaria de mostrar o histórico apagado; a auditoria (`app.moderation_actions`) não tem conteúdo e continua. Também é preciso confirmar se `pg_cron` está habilitado no plano e se o projeto pode ser pausado por inatividade (o que interrompe o job).
+
 ## 6. Limite geográfico e privacidade
 
 - **Fonte [OK]:** lista de municípios da tabela IBGE "Composição das Regiões Metropolitanas" 2025 (RM de Recife, código 03001: 14 municípios) e geometria da Malha Municipal Digital 2025 do IBGE (`PE_Municipios_2025.zip`, SIRGAS 2000, sha256 `534bc4d7…0d2cb8`), convertida para EPSG:4326 pelo PostGIS. Área total de 2.761,9 km², igual à soma oficial do IBGE. Sem buffer.
@@ -217,10 +242,11 @@ O trigger `app.reports_guard` já recusa qualquer transição fora desta tabela,
 | `src/services/supabase/createSupabase.js` | Cria o cliente; valida URL e chave publicável; `isLoopbackUrl` |
 | `src/services/supabase/client.web.js` | Sessão em `localStorage`, `detectSessionInUrl: true` |
 | `src/services/supabase/client.native.js` | Sessão em AsyncStorage (sem criptografia), `detectSessionInUrl: false`, auto-refresh ligado ao `AppState` |
-| `src/store/AuthContext.js` | Estados visitante e conta; `signIn`, `signUp`, `resendConfirmation`, `logout` (escopo `local`). O objeto `user` não contém e-mail |
+| `src/store/AuthContext.js` | Estados visitante e conta; `signIn`, `signUp`, `resendConfirmation`, `logout` (escopo `local`, nunca lança exceção). O objeto `user` não contém e-mail |
+| `src/store/authSession.js` | `accountFromSession` e `signOutThisDevice` (resultado do logout pela sessão gravada), testáveis sem React |
 | `src/store/authMessages.js` | Mensagens pt-BR para erros de autenticação; falha de rede e códigos desconhecidos aparecem explicitamente |
 | `src/features/reports/services/reportService.js` | `listPublishedReports`, `listReports`, `createReport`, `listMyReports`, `withdrawReport`, `subscribeToReports` |
-| `src/features/reports/constants.js` | Códigos de perigo e rótulos pt-BR; rótulos de status |
+| `src/features/reports/constants.js` | Códigos de perigo e rótulos pt-BR; rótulos de status; `submissionOutcome` (texto da confirmação de envio, compartilhado entre web e nativo) |
 | `src/features/reports/hooks/useMyReports.js` | Fluxo "Meus relatos" compartilhado: confirmar → pendente → sucesso ou erro |
 | `src/features/reports/components/MyReportsPanel.{web,native}.js` | Interface de "Meus relatos" |
 | `src/features/map/components/AddressAutocomplete.native.js` | Autocomplete nativo (mesmas regras da web), usado no mapa e no painel de chuva |
@@ -239,13 +265,13 @@ Custo estimado do polling: 2 chamadas por minuto por tela ativa, a uma função 
 
 ### 7.3 Relatos antigos (`floody_reports`) [OK]
 
-A chave local do Floody 2.0 não é mais gravada. O conteúdo aparece só para leitura como "Salvo só neste dispositivo · não publicado" e **nunca** é enviado ao servidor.
+A chave local do Floody 2.0 não é mais gravada. O conteúdo aparece só para leitura como "Salvo só neste dispositivo · não publicado" e **nunca** é enviado ao servidor. Esses relatos continuam visíveis mesmo sem backend configurado ou com falha de rede: `listReports()` rejeita (o erro é exibido), mas o erro traz os relatos locais em `partial`.
 
 ### 7.4 Sessões
 
 - **Web [OK]:** o link de confirmação abre o app web e entra na conta (`detectSessionInUrl`).
 - **Nativo [OK]:** sem deep links; o usuário confirma o e-mail pelo link e depois entra no app com e-mail e senha.
-- **Logout:** escopo `local`, encerra apenas a sessão deste aparelho.
+- **Logout [OK]:** escopo `local`, encerra apenas a sessão deste aparelho. O resultado é decidido pela sessão que ficou gravada (`src/store/authSession.js`), não só pelo erro: com `supabase-js` 2.119 a sessão local é apagada antes da chamada ao servidor, então sair sem internet funciona neste aparelho (o refresh token só não é revogado no servidor). Se o armazenamento falhar e a sessão continuar gravada, o app mantém a conta e mostra "Não foi possível sair desta conta neste aparelho".
 - **Armazenamento nativo [DECISÃO]:** tokens em AsyncStorage sem criptografia; a alternativa é `expo-secure-store`.
 
 ## 8. Configuração
@@ -273,7 +299,7 @@ Arquivos que nunca entram no Git: `Floody/.env.local`, `Floody/supabase/.temp/` 
 1. Limite de sinalizações para ocultar e se só contas verificadas contam (recomendado: 3, só verificadas).
 2. Prazo de revisão de relatos retidos (implementado: 24 h, depois `expired`).
 3. Relato aprovado após retenção: 48 h a partir da aprovação ou limitado a `received_at + 48 h`.
-4. Retenção de relatos `rejected` (implementado no CHECK: 7 dias).
+4. Política de retenção e purge de relatos encerrados. Hoje o CHECK só calcula `purge_after = closed_at + 7 dias` para estados terminais; **nada é apagado** (ver seção 5.1).
 5. Exclusão de conta: detalhes de anonimização e retenção.
 6. Retenção do log de auditoria.
 7. Regras de moderação e responsável pela lista de termos.
