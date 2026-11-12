@@ -11,7 +11,7 @@ export const hazardLabel = code => HAZARDS.find(item => item.code === code)?.lab
 // Source of the service-area boundary (IBGE Malha Municipal Digital 2025); credited wherever reports are sent.
 export const IBGE_MALHAS_URL = 'https://www.ibge.gov.br/geociencias/organizacao-do-territorio/estrutura-territorial/15774-malhas.html';
 
-export const REPORT_STATUS ={ published: 'published', legacyLocal: 'legacy_local' };
+export const REPORT_STATUS = { published: 'published', legacyLocal: 'legacy_local' };
 export const UNVERIFIED_LABEL = 'Relato não verificado';
 export const LEGACY_LABEL = 'Salvo só neste dispositivo · não publicado';
 

@@ -20,8 +20,7 @@ Este arquivo descreve **o que já existe no código**, **o que foi implementado 
 - **Visibilidade derivada:** um relato é público apenas se `status = 'published' AND now() < expires_at`. Um job de manutenção atrasado (ou inexistente) não expõe nada.
 - **Autoridade lida do banco a cada chamada:** a verificação de e-mail vem de `auth.users.email_confirmed_at`; papéis vêm de `app.user_roles`. Claims do JWT e `user_metadata` nunca são considerados.
 - **Sem Edge Functions e sem Realtime** nesta versão. Os clientes atualizam por polling (30 s, só com o app ativo) e por notificação local.
-- **Migrations aplicadas no projeto remoto** em 2026-11-10: `20261110190000`, `20261110190100`, `20261110190200`.
-- **Migration só local (ainda não aplicada no remoto):** `20261112120000_submit_report_text_and_duplicates.sql` (regras versão 2; ver §4.4). Aplicar no remoto exige aprovação explícita.
+- **Migrations aplicadas no projeto remoto:** `20261110190000`, `20261110190100`, `20261110190200` (2026-11-10) e `20261112120000_submit_report_text_and_duplicates.sql` (2026-11-12; regras versão 2, ver §4.4).
 
 ## 2. Estado da implementação
 
@@ -115,7 +114,7 @@ Os testes de serviço usam um cliente Supabase **simulado**: provam o comportame
 | `app.rmr_boundary_parts` | **[OK]** | `ST_Subdivide(geom, 256)` com índice GiST, para a consulta de ponto |
 | `app.moderation_actions` | **[OK]** | Auditoria só de inserção, sem conteúdo do relato. Única atualização permitida: zerar `actor_id` quando a conta é excluída |
 | `app.user_roles` | **[OK]** (vazia) | Papéis `reviewer` e `admin`; nenhuma função a preenche ainda |
-| `app.app_config` | **[OK]** | `submit_limit_per_hour = 5`, `submit_limit_per_day = 20`, `public_list_limit = 500`, `review_window_hours = 24`, `rules_version = 2` (1 no remoto até a migration `20261112120000` ser aplicada) |
+| `app.app_config` | **[OK]** | `submit_limit_per_hour = 5`, `submit_limit_per_day = 20`, `public_list_limit = 500`, `review_window_hours = 24`, `rules_version = 2` |
 | `app.report_flags`, `app.role_events`, `app.moderation_terms`, `app.maintenance_runs` | **[ADIADO]** | Serão adicionadas por migrations novas, sem alterar as existentes |
 
 ### 3.3 Onde cada invariante é garantida [OK]
@@ -173,7 +172,7 @@ Ordem das verificações (faz parte do contrato):
 
 Resposta: `{ ok, code, retryable, replayed, report: { id, status, expires_at }, details }`.
 
-### 4.4 Regras de moderação, versão 2 [OK local] (versão 1 no remoto)
+### 4.4 Regras de moderação, versão 2 [OK]
 
 O relato fica `held` (não público) se:
 

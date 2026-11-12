@@ -23,8 +23,8 @@ const inflight = new Map();
 
 const isText = value => typeof value === 'string' && value.trim().length > 0;
 // UX mirror of the server rule "at least one letter or digit" (Latin letters, accents included).
-const hasWords = value => /[0-9A-Za-zÀ-ɏ]/.test(value);
-const validPoint =(lat, lon) => Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180;
+const hasWords = value => /[0-9A-Za-z\u00C0-\u024F]/.test(value);
+const validPoint = (lat, lon) => Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180;
 
 export class ReportSubmissionError extends Error {
   constructor(message, code, retryable = false) {
