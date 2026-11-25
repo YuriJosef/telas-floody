@@ -47,7 +47,7 @@ Os serviços externos configurados são Open-Meteo (chuva), Geoapify (endereços
 
 ## Ambiente e chaves
 
-`.env` e variantes estão no `.gitignore`; `.env.example` contém apenas configuração de exemplo. Não foram identificadas credenciais nos arquivos de origem analisados.
+`.env` e variantes estão no `.gitignore`; `.env.example` contém apenas configuração pública: URLs e a chave publicável do Supabase, que já vai em todo bundle e só concede o que RLS e grants permitem. Chaves secretas (`sb_secret_`, service role) e a chave Geoapify nunca entram no Git.
 
 **`EXPO_PUBLIC_*` é incorporado no bundle e pode ser lido pelo usuário.** O arquivo ignorado evita publicar a chave pelo Git. Para web, restrinja a chave Geoapify aos referrers ou origens do desenvolvimento, como `http://localhost:8081` na porta usada. Para Expo Go ou React Native, use uma chave de demonstração dedicada e de baixo privilégio. A restrição por origem do navegador não autentica o app nativo. Use restrição por IP quando houver saída previsível e teste a configuração em cada plataforma. Acompanhe a cota e revogue a chave de demonstração quando terminar. Chaves no mesmo projeto compartilham a cota. Nunca use chaves privilegiadas no bundle. [Restrições Geoapify](https://myprojects.geoapify.com/help/api-keys/)
 
