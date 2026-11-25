@@ -278,7 +278,7 @@ A chave local do Floody 2.0 não é mais gravada. O conteúdo aparece só para l
 
 | Configuração | Onde | Estado |
 |---|---|---|
-| `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | `Floody/.env.local` (fora do Git); nomes em `.env.example` | Configurado para o projeto remoto |
+| `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Valores em `.env.example` (no Git, de propósito: a chave publicável já vai em todo bundle e só concede o que RLS e grants permitem); copiados para `Floody/.env.local` | Configurado para o projeto remoto |
 | `EXPO_PUBLIC_GEOAPIFY_API_KEY` | `Floody/.env.local` | Chave sem restrição de origem (funciona no nativo) |
 | Confirmação de e-mail ligada, login anônimo desligado | Projeto remoto | Verificado pelo endpoint público `/auth/v1/settings` |
 | Site URL, URLs de redirecionamento, tamanho mínimo de senha, schemas expostos | Painel do Supabase | **Não verificado** por este repositório; `supabase/config.toml` vale só para o ambiente local |
@@ -316,7 +316,7 @@ Arquivos que nunca entram no Git: `Floody/.env.local`, `Floody/supabase/.temp/` 
 - Leia `CLAUDE.md`, `Agents.md` e `Floody/AGENTS.md`. Para APIs do Expo, consulte a documentação do SDK 58.
 - **Nunca** aplique migrations, altere dados, configurações de Auth ou segredos do projeto remoto sem aprovação explícita. Valide tudo antes no Supabase local (`npx.cmd supabase start`, `npx.cmd supabase test db`).
 - Funcionalidade nova no banco: **nova migration**, nunca edição das já aplicadas. Toda função nova em `public` precisa de revoke e grants explícitos, `SECURITY DEFINER`, `SET search_path = ''` e testes de privilégio.
-- Não coloque chave secreta ou de service role em variáveis `EXPO_PUBLIC_*`.
+- Não coloque chave secreta ou de service role em variáveis `EXPO_PUBLIC_*` nem em `.env.example`. Só a chave publicável do Supabase pode ficar no Git; a chave do Geoapify continua fora enquanto não tiver restrição de origem.
 - Não apresente itens **[ADIADO]** como existentes, nem relatos de usuários como verificados.
 - Um servidor de desenvolvimento apontado para o Supabase local (`127.0.0.1`) não funciona num celular físico; use o servidor configurado pelo `.env.local`.
 - Depois de qualquer mudança: `npm.cmd run check`, `npm.cmd test` e os bundles web, iOS e Android. Funcionalidade nativa só está verificada depois de testada em aparelho.
